@@ -70,4 +70,9 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
             cd ${{ secrets.DEPLOY_DIR }}
+            # 注入 GHCR 拉取凭据（包为 Private，deploy.sh 拉镜像前用它登录）
+            grep -q '^GHCR_USER=' .env || echo 'GHCR_USER=gillbardarrpodf4566-byte' >> .env
+            grep -q '^GHCR_TOKEN=' .env || echo 'GHCR_TOKEN=' >> .env
+            sed -i "s|^GHCR_USER=.*|GHCR_USER=gillbardarrpodf4566-byte|" .env
+            sed -i "s|^GHCR_TOKEN=.*|GHCR_TOKEN=${{ secrets.GHCR_TOKEN }}|" .env
             bash deploy.sh
