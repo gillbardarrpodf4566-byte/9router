@@ -59,7 +59,7 @@ jobs:
   # 未配置则跳过，服务器侧 cron 每 5 分钟自动检测新镜像并更新（见 deploy/bootstrap.sh）
   deploy:
     needs: build-and-push
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && secrets.DEPLOY_HOST != ''
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to server
