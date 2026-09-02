@@ -39,9 +39,9 @@ echo "==> 2/4 生成 .env（随机密钥）"
 if [ -f "$DIR/.env" ]; then
   echo "    .env 已存在，跳过生成（保留原密码/密钥）"
 else
-  JWT_VAL=$(openssl rand -base64 48)
-  AKS_VAL=$(openssl rand -base64 32)
-  MIS_VAL=$(openssl rand -base64 32)
+  JWT_VAL=$(openssl rand -hex 48)
+  AKS_VAL=$(openssl rand -hex 32)
+  MIS_VAL=$(openssl rand -hex 32)
   [ -n "$PASSWORD" ] || PASSWORD=$(openssl rand -base64 12)
   sed \
     -e "s/^JWT_SECRET=.*/JWT_SECRET=$JWT_VAL/" \
