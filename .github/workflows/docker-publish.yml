@@ -55,9 +55,11 @@ jobs:
           provenance: false
           sbom: false
 
+  # 可选：配置了 DEPLOY_HOST secret 时立即 SSH 部署（秒级）；
+  # 未配置则跳过，服务器侧 cron 每 5 分钟自动检测新镜像并更新（见 deploy/bootstrap.sh）
   deploy:
     needs: build-and-push
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && secrets.DEPLOY_HOST != ''
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to server

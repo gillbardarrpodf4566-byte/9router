@@ -64,9 +64,19 @@ else
   echo "    公钥已存在，跳过"
 fi
 
-echo "==> 4/4 首次部署（拉镜像 + 启动容器）"
+echo "==> 4/5 首次部署（拉镜像 + 启动容器）"
 cd "$DIR"
 bash deploy.sh
+
+echo "==> 5/5 安装自动更新任务（每 5 分钟检测新镜像）"
+if command -v flock >/dev/null 2>&1; then
+  CRON_CMD="flock -n /tmp/9router-auto.lock /bin/bash deploy.sh"
+else
+  CRON_CMD="/bin/bash deploy.sh"
+fi
+CRON_LINE="*/5 * * * * cd $DIR && $CRON_CMD >> /tmp/9router-auto.log 2>&1"
+( crontab -l 2>/dev/null | grep -v "9router-auto" ; echo "$CRON_LINE" ) | crontab -
+echo "    已安装: $(crontab -l | grep 9router-auto)"
 
 IP=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')
 echo
@@ -78,5 +88,5 @@ if [ -n "$DOMAIN" ]; then
   echo " 再按 deploy/DEPLOY-AUTO.md 第 4 步配置 HTTPS（或等 DNS 生效后告诉我域名，我来配）"
 fi
 echo "==================================================="
-echo " 最后一步: 在 GitHub 仓库加 4 个 Secrets（见 deploy/DEPLOY-AUTO.md 2.3），"
-echo " 之后每次 git push origin master 即全自动部署。"
+echo " 部署已全自动: git push origin master → 构建镜像 → 服务器 5 分钟内自动更新。"
+echo " 查看自动更新日志: tail -f /tmp/9router-auto.log"
