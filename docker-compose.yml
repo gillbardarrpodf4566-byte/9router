@@ -1,6 +1,6 @@
 services:
   9router:
-    image: decolua/9router:latest
+    image: ghcr.io/gillbardarrpodf4566-byte/9router:latest
     container_name: 9router
     restart: always
     ports:
@@ -14,16 +14,17 @@ services:
       PORT: "20128"
       HOSTNAME: "0.0.0.0"
       NODE_ENV: production
-      HEADROOM_URL: http://headroom:8787
-    depends_on:
-      - headroom
+    # 需要 headroom 功能时（先取消注释下方 headroom 服务），再取消本行注释:
+    # HEADROOM_URL: http://headroom:8787
 
-  headroom:
-    image: ghcr.io/chopratejas/headroom:latest
-    container_name: headroom
-    restart: always
-    ports:
-      - "8787:8787"
+  # 可选服务：仪表盘「headroom」功能使用。
+  # 小内存服务器（<3G 空闲）建议保持注释，9router 本身不依赖它。
+  # headroom:
+  #   image: ghcr.io/chopratejas/headroom:latest
+  #   container_name: headroom
+  #   restart: always
+  #   ports:
+  #     - "8787:8787"
 
 volumes:
   9router-data:
