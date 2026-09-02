@@ -48,10 +48,14 @@ else
     -e "s/^INITIAL_PASSWORD=.*/INITIAL_PASSWORD=$PASSWORD/" \
     -e "s/^API_KEY_SECRET=.*/API_KEY_SECRET=$AKS_VAL/" \
     -e "s/^MACHINE_ID_SALT=.*/MACHINE_ID_SALT=$MIS_VAL/" \
+    -e "s/^GHCR_USER=.*/GHCR_USER=gillbardarrpodf4566-byte/" \
+    -e "s|^GHCR_TOKEN=.*|GHCR_TOKEN=|g" \
     -e "s|https://your-domain.com|https://${DOMAIN:-your-domain.com}|g" \
     "$DIR/.env.template" > "$DIR/.env"
   rm -f "$DIR/.env.template"
   chmod 600 "$DIR/.env"
+  # 注意: GHCR_TOKEN 留空属正常 — 首次由 GitHub 部署流程自动写入
+  # （仓库 secret GHCR_TOKEN），deploy.sh 每次拉镜像前会用它登录。
 fi
 
 echo "==> 3/4 放行 GitHub Actions 的 SSH 登录"

@@ -4,10 +4,16 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# 镜像是 GHCR 公开包时可直接拉取。若拉取报 401/unauthorized，
-# 在 .env 中设置 GHCR_USER/GHCR_TOKEN 并取消下面两行注释:
-# set -a; source .env; set +a
-# echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+# GHCR 包当前为私有，每次部署前用 .env 中的凭据登录。
+# （若之后把包改为 Public 可删除此段；GHCR_TOKEN 缺失时跳过登录直接尝试匿名拉取）
+if [ -f .env ] && grep -q '^GHCR_TOKEN=' .env; then
+  set -a; source .env; set +a
+  if [ -n "${GHCR_TOKEN:-}" ] && [ -n "${GHCR_USER:-}" ]; then
+    echo "--- 登录 GHCR ---"
+    echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null \
+      && echo "    登录成功" || echo "    登录失败（token 可能过期），继续尝试拉取"
+  fi
+fi
 
 docker compose pull
 docker compose up -d
