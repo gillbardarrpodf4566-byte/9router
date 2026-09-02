@@ -490,6 +490,13 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
     throw new Error("MITM server is already running");
   }
 
+  // Ensure MITM_DIR exists before claiming the lock (fresh installs / cleared AppData).
+  try {
+    fs.mkdirSync(MITM_DIR, { recursive: true });
+  } catch (e) {
+    throw new Error(`Failed to create MITM directory: ${e.message}`);
+  }
+
   // Atomically claim lock to prevent concurrent startServer across processes.
   // O_EXCL (flag: "wx") fails with EEXIST if the file already exists.
   try {

@@ -1,0 +1,45 @@
+🔐 登录中...
+✅ 登录成功
+
+🧪 测试 Qoder 模型...
+
+✅ qd/auto                7826ms  OK
+✅ qd/ultimate            3088ms  OK
+✅ qd/performance         4828ms  OK
+✅ qd/efficient           3742ms  OK
+✅ qd/lite                2211ms  OK
+❌ qd/qmodel_preview       339ms  400: [qoder/qmodel_preview] [400]: {"error":{"message":"qoder: model_config for \"qmodel_preview\" not yet known (run a model list fetch or check upstream connectivity)"}} (reset after 30s)
+✅ qd/qmodel_latest       5533ms  OK
+✅ qd/qmodel              3176ms  OK
+✅ qd/qmodel_38max        7411ms  OK
+✅ qd/kmodel_latest       4164ms  OK
+✅ qd/kmodel              3425ms  OK
+❌ qd/gm51model            384ms  400: [qoder/gm51model] [400]: {"error":{"message":"qoder: model_config for \"gm51model\" not yet known (run a model list fetch or check upstream connectivity)"}} (reset after 6s)
+✅ qd/dmodel              4861ms  OK
+✅ qd/dfmodel             3902ms  OK
+✅ qd/mmodel              2977ms  OK
+✅ qoder-free             3393ms  OK
+
+======================================================================
+
+📊 结果: 14/16 个模型可用
+
+✅ 可用的模型:
+   - qd/auto
+   - qd/ultimate
+   - qd/performance
+   - qd/efficient
+   - qd/lite
+   - qd/qmodel_latest
+   - qd/qmodel
+   - qd/qmodel_38max
+   - qd/kmodel_latest
+   - qd/kmodel
+   - qd/dmodel
+   - qd/dfmodel
+   - qd/mmodel
+   - qoder-free
+
+❌ 不可用的模型:
+   - qd/qmodel_preview: 400: [qoder/qmodel_preview] [400]: {"error":{"message":"qoder: model_config for \"qmodel_preview\" not yet known (run a model list fetch or check upstream connectivity)"}} (reset after 30s)
+   - qd/gm51model: 400: [qoder/gm51model] [400]: {"error":{"message":"qoder: model_config for \"gm51model\" not yet known (run a model list fetch or check upstream connectivity)"}} (reset after 6s)

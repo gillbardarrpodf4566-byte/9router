@@ -86,3 +86,9 @@ graphify-out/*
 .codegraph/
 .PR/
 .next-analyze/*
+
+# Qoder session files (sensitive tokens)
+qoder-sessions/
+scripts/qoder-sessions/
+sessions/
+*.session.json
