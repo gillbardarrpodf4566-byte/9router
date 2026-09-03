@@ -62,21 +62,6 @@ export const QODER_MODEL_MAP = {
   mmodel: "mmodel",
 };
 
-/**
- * Qoder's SSE envelope can carry gateway-level failures inside an HTTP 200 response:
- * {statusCodeValue:504, body:'{"code":"504","message":"upstream model timeout"}'}.
- * These are Qoder's edge timing out against the real inference backend — transient
- * and retryable. Unlike billing blocks (code 112/10605), these are network/path issues
- * that should trigger 9Router's retry/failover logic.
- */
-export const QODER_GATEWAY_ERROR_STATUSES = [502, 503, 504];
-
-/**
- * Message patterns that indicate an upstream timeout error.
- * Order doesn't matter — checked after status code match.
- */
-export const QODER_GATEWAY_ERROR_PATTERNS = [/upstream model timeout/i, /gateway timeout/i];
-
 // RSA public key for COSY encryption (extracted from Qoder IDE v0.9).
 // Matches the CLIProxyAPIPlus branch and live qodercli traffic.
 export const QODER_RSA_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
