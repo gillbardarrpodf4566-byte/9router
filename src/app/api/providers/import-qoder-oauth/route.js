@@ -58,8 +58,8 @@ export async function POST(request) {
           "oauth",
           account.name || "Qoder User",
           account.email || "",
-          account.priority || 50,
-          true,
+          Number(account.priority) || 50,
+          1, // isActive — INTEGER column, better-sqlite3 rejects booleans
           data,
           nowIso,
           nowIso
