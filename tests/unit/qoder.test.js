@@ -453,11 +453,29 @@ describe("wrapQoderSSE", () => {
     expect(() => JSON.parse(dataLine.slice("data: ".length))).not.toThrow();
   });
 
-  it("upstream error envelope produces an error chunk + [DONE]", async () => {
+  it("first-frame gateway error (503) becomes a real error Response, not an in-band chunk", async () => {
+    // Qoder reports upstream gateway failures inside an HTTP 200 SSE frame.
+    // Surfacing them as a real non-2xx Response is what lets the executor retry
+    // and chatCore fail over / cool the account down; an in-band text chunk
+    // would be recorded as a successful stream.
     const env = JSON.stringify({ statusCodeValue: 503, body: "service unavailable" });
     const wrapped = await wrapQoderSSE(makeResponse([`data: ${env}\n\n`]), "qoder/lite");
+
+    expect(wrapped.status).toBe(503);
+    expect(wrapped.ok).toBe(false);
+    const json = await wrapped.json();
+    expect(json.error.message).toContain("service unavailable");
+  });
+
+  it("non-gateway upstream error envelope produces an error chunk + [DONE]", async () => {
+    // 500 is not a transient gateway status, so it keeps the legacy in-band
+    // shape: error text + [DONE] on a 200 response.
+    const env = JSON.stringify({ statusCodeValue: 500, body: "internal failure" });
+    const wrapped = await wrapQoderSSE(makeResponse([`data: ${env}\n\n`]), "qoder/lite");
+
+    expect(wrapped.status).toBe(200);
     const out = await drain(wrapped);
-    expect(out).toContain("[qoder error 503");
+    expect(out).toContain("[qoder error 500");
     expect(out).toContain("data: [DONE]\n\n");
   });
 

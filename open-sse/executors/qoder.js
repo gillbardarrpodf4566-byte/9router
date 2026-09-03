@@ -29,12 +29,14 @@ import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { SSE_DONE } from "../utils/sseConstants.js";
-import { FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { FETCH_CONNECT_TIMEOUT_MS, DEFAULT_RETRY_CONFIG, resolveRetryEntry } from "../config/runtimeConfig.js";
 import {
   QODER_CHAT_URL_ENCODED,
   QODER_CHAT_BASE_ALT,
   QODER_CHAT_SIG_PATH,
   QODER_MODEL_MAP,
+  QODER_GATEWAY_ERROR_STATUSES,
+  QODER_GATEWAY_ERROR_PATTERNS,
 } from "../shared/qoder/constants.js";
 import { getQoderModelConfig, resolveQoderModels, isQoderPat, resolveQoderCredentials } from "../services/qoderModels.js";
 
@@ -227,16 +229,56 @@ function isBillingBlock(inner) {
 }
 
 /**
- * Peek the first SSE frame to detect billing errors before piping.
- * Returns { isBilling, statusVal, message, consumed } — `consumed` is every
- * byte read so far (including the peeked line) so the caller can re-process
- * it and nothing is dropped from the stream.
+ * Check if a qoder envelope frame is a transient gateway/upstream failure.
+ *
+ * Qoder's edge wraps the real inference call, so an upstream timeout arrives as
+ * an HTTP 200 SSE frame like:
+ *   {statusCodeValue:504, body:'{"code":"504","message":"upstream model timeout"}'}
+ * Left as-is this reads as a *successful* stream to chatCore — no retry, no
+ * account failover, no cooldown, and the request is logged as OK.
+ *
+ * Billing blocks are checked first by the caller: they are actionable and must
+ * keep their 403 → combo-fallback path, so they take precedence here.
+ *
+ * Gated on statusVal !== 200 so a normal completion whose *text* happens to
+ * mention "gateway timeout" is never mistaken for a failure.
+ */
+function isGatewayError(statusVal, inner) {
+  if (statusVal === 200) return false;
+  if (QODER_GATEWAY_ERROR_STATUSES.includes(statusVal)) return true;
+  if (!inner || typeof inner !== "string") return false;
+  return QODER_GATEWAY_ERROR_PATTERNS.some((pattern) => pattern.test(inner));
+}
+
+/**
+ * Pull a human-readable message out of a qoder envelope `body`. The body is
+ * usually a JSON string like {"code":"504","message":"upstream model timeout"};
+ * surfacing the inner message keeps chatCore's `[504]: <msg>` readable instead
+ * of dumping raw JSON at the client.
+ */
+function extractUpstreamMessage(inner, statusVal) {
+  if (inner && typeof inner === "string") {
+    try {
+      const parsed = JSON.parse(inner);
+      const msg = parsed?.message || parsed?.error?.message;
+      if (typeof msg === "string" && msg.trim()) return msg.trim();
+    } catch { /* not JSON — fall through to the raw body */ }
+    if (inner.trim()) return inner.trim();
+  }
+  return `qoder upstream error (${statusVal})`;
+}
+
+/**
+ * Peek the first SSE frame to detect billing/gateway errors before piping.
+ * Returns { isBilling, isGatewayError, statusVal?, message?, consumed, upstreamDone } —
+ * `consumed` is every byte read so far (including the peeked line) so the caller can
+ * re-process it and nothing is dropped from the stream.
  */
 async function peekFirstQoderFrame(reader, decoder) {
   let consumed = "";
   while (true) {
     const { done, value } = await reader.read();
-    if (done) return { isBilling: false, consumed, upstreamDone: true };
+    if (done) return { isBilling: false, isGatewayError: false, consumed, upstreamDone: true };
 
     consumed += decoder.decode(value, { stream: true });
     const nl = consumed.indexOf("\n");
@@ -246,18 +288,36 @@ async function peekFirstQoderFrame(reader, decoder) {
     if (!line.startsWith("data:")) continue;
 
     const data = line.slice(5).trimStart();
-    if (data === "[DONE]") return { isBilling: false, consumed };
+    if (data === "[DONE]") return { isBilling: false, isGatewayError: false, consumed };
 
     let envelope;
-    try { envelope = JSON.parse(data); } catch { return { isBilling: false, consumed }; }
+    try { envelope = JSON.parse(data); } catch { return { isBilling: false, isGatewayError: false, consumed }; }
 
     const statusVal = typeof envelope.statusCodeValue === "number" ? envelope.statusCodeValue : 200;
     const inner = typeof envelope.body === "string" ? envelope.body : "";
 
+    // Billing blocks take precedence (more specific/actionable → force combo fallback).
     if (statusVal !== 200 && isBillingBlock(inner)) {
-      return { isBilling: true, statusVal, message: inner || `qoder billing block (${statusVal})` };
+      return {
+        isBilling: true,
+        isGatewayError: false,
+        statusVal,
+        message: inner || `qoder billing block (${statusVal})`,
+      };
     }
-    return { isBilling: false, consumed };
+
+    // Gateway errors are transient network/path issues — will be surfaced as HTTP error
+    // below so base.js retry + chatCore failover/cooldown trigger.
+    if (isGatewayError(statusVal, inner)) {
+      return {
+        isBilling: false,
+        isGatewayError: true,
+        statusVal,
+        message: extractUpstreamMessage(inner, statusVal),
+      };
+    }
+
+    return { isBilling: false, isGatewayError: false, consumed };
   }
 }
 
@@ -280,20 +340,37 @@ async function peekFirstQoderFrame(reader, decoder) {
  * If detected, return 403 response so chatCore marks connection unavailable
  * and triggers combo fallback instead of leaking error text into chat.
  */
-async function wrapQoderSSE(response, model) {
+async function wrapQoderSSE(response, model, log = null) {
   if (!response.ok || !response.body) return response;
 
   const decoder = new TextDecoder();
   const reader = response.body.getReader();
 
-  // Peek first frame to detect billing block
+  // Peek first frame to detect billing/gateway errors before piping.
   const peek = await peekFirstQoderFrame(reader, decoder);
   if (peek?.isBilling) {
-    // Billing block detected — return 403 so chatCore fails this connection
+    // Billing block detected — return 403 so chatCore marks connection unavailable
+    // and triggers combo failover (rate limit cooldown + quota exhaustion).
     await reader.cancel().catch(() => {});
     return new Response(
       JSON.stringify({ error: { message: peek.message, code: peek.statusVal } }),
       { status: 403, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
+  if (peek?.isGatewayError) {
+    // Transient gateway/upstream failure — surface as real HTTP error (502/503/504)
+    // so base.js retry + chatCore failover/cooldown trigger. The message is already
+    // extracted in peek.message for a readable client error.
+    await reader.cancel().catch(() => {});
+    return new Response(
+      JSON.stringify({
+        error: {
+          message: `upstream ${peek.statusVal} · ${peek.message}`,
+          code: `gateway_${peek.statusVal}_error`,
+        },
+      }),
+      { status: peek.statusVal, headers: { "Content-Type": "application/json" } }
     );
   }
 
@@ -302,6 +379,11 @@ async function wrapQoderSSE(response, model) {
   const upstreamDrained = peek.upstreamDone === true;
   const encoder = new TextEncoder();
   let doneEmitted = false;
+  // Tracks whether any real content frame went out. An error frame after this
+  // point is mid-stream: response headers are already committed, so the status
+  // can no longer be changed and failover is impossible — but it must not be
+  // silently logged as a success either.
+  let contentEmitted = false;
 
   // Process one already-extracted SSE line (no trailing newline).
   const processLine = (line, controller) => {
@@ -323,6 +405,13 @@ async function wrapQoderSSE(response, model) {
     const inner = typeof envelope.body === "string" ? envelope.body : "";
     if (statusVal !== 200) {
       const msg = inner || `upstream status ${statusVal}`;
+      // An error frame after content has started is mid-stream: response headers
+      // are already committed, so the status can no longer be changed and neither
+      // retry nor failover is possible. Log it so a truncated request is never
+      // silently recorded as a clean success.
+      if (contentEmitted) {
+        log?.warn?.("QODER", `mid-stream upstream error ${statusVal} on ${model} (response already committed, no failover possible): ${truncate(msg, 200)}`);
+      }
       const errChunk = JSON.stringify({
         id: `qoder-error-${Date.now()}`,
         object: "chat.completion.chunk",
@@ -344,6 +433,7 @@ async function wrapQoderSSE(response, model) {
     // Strip embedded newlines so the SSE frame stays a single event.
     const sanitized = inner.replace(/\r?\n/g, "");
     controller.enqueue(encoder.encode(`data: ${sanitized}\n\n`));
+    contentEmitted = true;
   };
 
   const stream = new ReadableStream({
@@ -500,65 +590,93 @@ export class QoderExecutor extends BaseExecutor {
     const encodedBodyStr = qoderEncodeBody(plainBody);
     const encodedBodyBuf = Buffer.from(encodedBodyStr, "latin1");
 
-    let cosyHeaders;
-    try {
-      cosyHeaders = buildCosyHeaders(
-        encodedBodyBuf,
-        url,
-        {
-          userId: psd.userId,
-          authToken: credentials.accessToken,
-          name: credentials.displayName || "",
-          email: credentials.email || "",
-          machineId: psd.machineId || "",
-        },
-      );
-    } catch (err) {
-      // cosy.js throws synchronously on missing userId/authToken — surface
-      // as 401 so chatCore prompts re-auth instead of returning a 500.
-      const fakeResp = new Response(
-        JSON.stringify({ error: { message: `qoder cosy signing failed: ${err.message}` } }),
-        { status: 401, headers: { "Content-Type": "application/json" } },
-      );
-      return { response: fakeResp, url, headers: {}, transformedBody: body };
-    }
-
     const modelSource = (payload.model_config && payload.model_config.source) || "system";
-    const headers = {
-      "Content-Type": "application/json",
-      Accept: "text/event-stream",
-      "Cache-Control": "no-cache",
-      "X-Model-Key": qoderKey,
-      "X-Model-Source": modelSource,
-      // gzip triggers signature validation on Qoder's CDN; force identity.
-      "Accept-Encoding": "identity",
-      ...cosyHeaders,
-    };
-
-    // Abort if upstream doesn't return response headers within connect timeout.
+    const retryConfig = { ...DEFAULT_RETRY_CONFIG, ...this.config.retry };
     const timeoutMs = this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
-    const connectCtrl = new AbortController();
-    const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), timeoutMs);
-    const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
 
-    let response;
-    try {
-      response = await proxyAwareFetch(
-        url,
-        { method: "POST", headers, body: encodedBodyBuf, signal: mergedSignal },
-        proxyOptions,
-      );
-    } finally {
-      clearTimeout(connectTimer);
+    // Qoder's edge reports transient gateway failures (504 "upstream model
+    // timeout") *inside* an HTTP 200 SSE frame. wrapQoderSSE converts those into
+    // a real error Response. We retry them here because this executor overrides
+    // base.execute() and therefore never reaches base.js's own retry loop. Every
+    // Qoder account shares the same congested upstream pool, so a same-account
+    // retry after a short delay is at least as useful as failing over.
+    let attempt = 0;
+    for (;;) {
+      // COSY headers carry a Cosy-Date timestamp that the MD5 signature covers,
+      // so each attempt must be signed fresh — a replayed signature can be rejected.
+      let cosyHeaders;
+      try {
+        cosyHeaders = buildCosyHeaders(
+          encodedBodyBuf,
+          url,
+          {
+            userId: psd.userId,
+            authToken: credentials.accessToken,
+            name: credentials.displayName || "",
+            email: credentials.email || "",
+            machineId: psd.machineId || "",
+          },
+        );
+      } catch (err) {
+        // cosy.js throws synchronously on missing userId/authToken — surface
+        // as 401 so chatCore prompts re-auth instead of returning a 500.
+        const fakeResp = new Response(
+          JSON.stringify({ error: { message: `qoder cosy signing failed: ${err.message}` } }),
+          { status: 401, headers: { "Content-Type": "application/json" } },
+        );
+        return { response: fakeResp, url, headers: {}, transformedBody: body };
+      }
+
+      const headers = {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        "Cache-Control": "no-cache",
+        "X-Model-Key": qoderKey,
+        "X-Model-Source": modelSource,
+        // gzip triggers signature validation on Qoder's CDN; force identity.
+        "Accept-Encoding": "identity",
+        ...cosyHeaders,
+      };
+
+      // Abort if upstream doesn't return response headers within connect timeout.
+      const connectCtrl = new AbortController();
+      const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), timeoutMs);
+      const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
+
+      let response;
+      try {
+        response = await proxyAwareFetch(
+          url,
+          { method: "POST", headers, body: encodedBodyBuf, signal: mergedSignal },
+          proxyOptions,
+        );
+      } finally {
+        clearTimeout(connectTimer);
+      }
+
+      if (!response.ok) {
+        // Pass error response through unchanged so chatCore can capture it.
+        return { response, url, headers, transformedBody: payload };
+      }
+
+      const wrapped = await wrapQoderSSE(response, `qoder/${qoderKey}`, log);
+      if (wrapped.ok) return { response: wrapped, url, headers, transformedBody: payload };
+
+      // Non-2xx from wrapQoderSSE = billing block (403) or gateway failure (502/503/504).
+      // Only statuses present in retryConfig get retried; 403 falls through to
+      // chatCore so the account is marked unavailable and combo fallback runs.
+      const { attempts, delayMs } = resolveRetryEntry(retryConfig[wrapped.status]);
+      if (signal?.aborted || attempt >= attempts) {
+        return { response: wrapped, url, headers, transformedBody: payload };
+      }
+
+      attempt++;
+      log?.debug?.("RETRY", `qoder upstream ${wrapped.status} retry ${attempt}/${attempts} after ${delayMs / 1000}s`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      if (signal?.aborted) {
+        return { response: wrapped, url, headers, transformedBody: payload };
+      }
     }
-
-    if (!response.ok) {
-      // Pass error response through unchanged so chatCore can capture it.
-      return { response, url, headers, transformedBody: payload };
-    }
-
-    const wrapped = await wrapQoderSSE(response, `qoder/${qoderKey}`);
-    return { response: wrapped, url, headers, transformedBody: payload };
   }
 
   // Qoder device tokens don't refresh through OAuth — the upstream returns
@@ -582,4 +700,7 @@ export const __test__ = {
   wrapQoderSSE,
   buildQoderRequestBody,
   isBillingBlock,
+  isGatewayError,
+  extractUpstreamMessage,
+  peekFirstQoderFrame,
 };
