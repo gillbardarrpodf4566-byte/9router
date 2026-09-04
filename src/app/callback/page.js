@@ -78,10 +78,42 @@ function CallbackContent() {
     }
 
     setStatus("success");
-    setTimeout(() => {
+
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
       window.close();
       setTimeout(() => setStatus("done"), 500);
-    }, 1500);
+    };
+
+    // Method 0 (most reliable): relay through the server, keyed by state.
+    // All three browser channels above are origin-scoped — when the dashboard is
+    // reached at http://127.0.0.1 but Google redirected this popup to
+    // http://localhost (both valid loopback, different origins), postMessage is
+    // dropped, BroadcastChannel is partitioned and localStorage events never fire.
+    // The modal then waits forever. Going through the server ignores the origin
+    // boundary entirely, and also survives a popup blocker that nulls window.opener.
+    const relayToServer = async () => {
+      if (!state || !(code || error)) return;
+      try {
+        await fetch("/api/oauth/relay-callback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ state, code, error, errorDescription }),
+        });
+      } catch (e) {
+        console.log("server relay failed:", e);
+      }
+    };
+
+    // Await the relay before closing — window.close() aborts in-flight fetches and
+    // would strand the modal in "waiting". The 5s guard keeps a hung request from
+    // pinning this tab open forever.
+    Promise.race([
+      relayToServer(),
+      new Promise((resolve) => setTimeout(resolve, 5000)),
+    ]).then(() => setTimeout(finish, 800));
   }, [searchParams]);
 
   return (

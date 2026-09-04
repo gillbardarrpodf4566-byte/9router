@@ -755,3 +755,88 @@ export function stopZedProxy() {
   zedProxyPort = null;
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Generic authorization_code relay sessions.
+//
+// Providers whose OAuth lands on the app's own /callback *page* (antigravity,
+// gemini, …) previously relied solely on popup → opener messaging
+// (postMessage / BroadcastChannel / localStorage). All three are origin-scoped,
+// so a dashboard reached at http://127.0.0.1 while the redirect_uri said
+// http://localhost silently lost the code: the popup showed "Authorization
+// Successful", the modal spun forever.
+//
+// This store gives the /callback page an origin-independent path: it POSTs the
+// code to the server keyed by state, and the modal polls it back. The server
+// only *holds* the code — the modal still performs the single /exchange call,
+// so no duplicate provider connection can be created when both the channel
+// relay and this relay deliver.
+// ───────────────────────────────────────────────────────────────────────────
+
+const RELAY_SESSION_TTL_MS = 600000; // 10 minutes, matches popup OAuth patience
+const relaySessions = new Map();
+
+function pruneRelaySessions() {
+  const cutoff = Date.now() - RELAY_SESSION_TTL_MS;
+  for (const [state, session] of relaySessions) {
+    if (session.createdAt < cutoff) relaySessions.delete(state);
+  }
+}
+
+/**
+ * Register a relay session when an authorization_code auth URL is issued.
+ * @returns {boolean} true when the session was stored
+ */
+export function registerRelaySession({ state, provider, redirectUri, codeVerifier }) {
+  if (!state || !provider) return false;
+  pruneRelaySessions();
+  relaySessions.set(state, {
+    provider,
+    redirectUri: redirectUri || null,
+    codeVerifier: codeVerifier || null,
+    status: "pending",
+    code: null,
+    error: null,
+    errorDescription: null,
+    createdAt: Date.now(),
+  });
+  return true;
+}
+
+/**
+ * Record the code (or provider error) delivered by the /callback page.
+ * Only a matching, still-pending session is updated.
+ * @returns {"ok"|"unknown_state"|"already_settled"}
+ */
+export function completeRelaySession(state, { code, error, errorDescription }) {
+  if (!state) return "unknown_state";
+  pruneRelaySessions();
+  const session = relaySessions.get(state);
+  if (!session) return "unknown_state";
+  if (session.status !== "pending") return "already_settled";
+
+  if (error) {
+    session.status = "error";
+    session.error = String(error);
+    session.errorDescription = errorDescription ? String(errorDescription) : null;
+  } else if (code) {
+    session.status = "received";
+    session.code = String(code);
+  } else {
+    return "unknown_state";
+  }
+  return "ok";
+}
+
+/**
+ * Read relay session status (modal polls this).
+ */
+export function getRelaySessionStatus(state) {
+  if (!state) return null;
+  pruneRelaySessions();
+  return relaySessions.get(state) || null;
+}
+
+export function clearRelaySession(state) {
+  if (state) relaySessions.delete(state);
+}
+
