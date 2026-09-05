@@ -33,18 +33,9 @@ import {
   registerZedSession,
   getZedSessionStatus,
   clearZedSession,
-  registerRelaySession,
-  getRelaySessionStatus,
-  clearRelaySession,
 } from "@/lib/oauth/utils/server";
 import { detectIdeInstalled } from "@/lib/oauth/utils/ideDetect";
 import { ZED_HOSTED_CONFIG } from "@/lib/oauth/constants/oauth";
-
-// Providers that receive their OAuth callback on a dedicated local proxy server
-// (fixed or dynamic port) and therefore manage their own session lifecycle.
-// Everything else lands on the app's own /callback page and uses the generic
-// relay session so the modal can recover the code server-side.
-const PROXY_CALLBACK_PROVIDERS = new Set(["codex", "xai", "trae", "windsurf", "zed"]);
 
 async function completeXaiManualCode(code, state) {
   const session = state ? getXaiSessionStatus(state) : null;
@@ -109,23 +100,7 @@ export async function GET(request, { params }) {
         try { const p = new URL(redirectUri).port; if (p) meta.nativeAppPort = p; } catch { /* ignore */ }
       }
       const authData = await generateAuthData(provider, redirectUri, Object.keys(meta).length ? meta : undefined);
-
-      // Providers landing on the app's /callback page get a relay session keyed by
-      // state. The callback page POSTs the code to /api/oauth/relay-callback and
-      // the modal polls it back — an origin-independent path that still works when
-      // popup messaging can't cross the origin boundary (dashboard on
-      // 127.0.0.1, redirect_uri on localhost, or a popup blocker stripping opener).
-      let relaySession = false;
-      if (!PROXY_CALLBACK_PROVIDERS.has(provider) && authData.state && authData.flowType !== "device_code") {
-        relaySession = registerRelaySession({
-          state: authData.state,
-          provider,
-          redirectUri,
-          codeVerifier: authData.codeVerifier,
-        });
-      }
-
-      return NextResponse.json({ ...authData, relaySession });
+      return NextResponse.json(authData);
     }
 
     if (action === "start-proxy") {
@@ -178,27 +153,7 @@ export async function GET(request, { params }) {
       else if (provider === "zed") session = getZedSessionStatus(state);
       else if (provider === "xai") session = getXaiSessionStatus(state);
       else if (provider === "codex") session = getCodexSessionStatus(state);
-      else {
-        // Generic relay session — providers whose callback lands on the app's own
-        // /callback page (antigravity, gemini, …).
-        const relay = getRelaySessionStatus(state);
-        if (!relay) return NextResponse.json({ status: "unknown" });
-        if (relay.status === "error") {
-          clearRelaySession(state);
-          return NextResponse.json({
-            status: "error",
-            error: relay.error,
-            errorDescription: relay.errorDescription,
-          });
-        }
-        if (relay.status === "received") {
-          // Hand the code back so the modal performs the single /exchange call.
-          // Deliberately not cleared here: a dropped poll response must be able to
-          // re-read it. /exchange clears the session once the connection is saved.
-          return NextResponse.json({ status: "received", code: relay.code });
-        }
-        return NextResponse.json({ status: relay.status });
-      }
+      else return NextResponse.json({ error: "Poll only supported for codex/xai/trae/windsurf/zed" }, { status: 400 });
       if (!session) return NextResponse.json({ status: "unknown" });
       if (session.status === "done" || session.status === "error") {
         const payload = { ...session };
@@ -406,10 +361,6 @@ export async function POST(request, { params }) {
           : null,
         testStatus: "active",
       });
-
-      // The code has been consumed — drop the relay session so it can't be
-      // re-polled into a second exchange attempt.
-      if (state) clearRelaySession(state);
 
       return NextResponse.json({ 
         success: true, 

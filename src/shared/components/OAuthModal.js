@@ -56,12 +56,6 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const [isLocalhost, setIsLocalhost] = useState(false);
   const [placeholderUrl, setPlaceholderUrl] = useState("/callback?code=...");
   const callbackProcessedRef = useRef(false);
-  // Deadline anchor for the status poll, keyed by OAuth state. Held in a ref so an
-  // effect re-run (parent re-render hands us a new onSuccess/exchangeTokens
-  // identity) cannot reset the clock — a counter-based timeout would be cleared
-  // forever and the modal would spin endlessly, the exact failure this relay
-  // exists to prevent.
-  const pollStartRef = useRef(null);
 
   // Detect if running on localhost (client-side only)
   useEffect(() => {
@@ -78,11 +72,6 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   // Exchange tokens
   const exchangeTokens = useCallback(async (code, state) => {
     if (!authData) return;
-    // Claim the flow. Every path that can consume the code (popup channel relay,
-    // server relay poll, manual paste) funnels through here, so marking it once
-    // guarantees a single /exchange call and stops the relay poll from later
-    // overwriting a completed connection with "Authentication timeout".
-    callbackProcessedRef.current = true;
     try {
       const res = await fetch(`/api/oauth/${provider}/exchange`, {
         method: "POST",
@@ -109,7 +98,6 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
   const completeXaiManualCode = useCallback(async (code) => {
     if (!authData?.state) return;
-    callbackProcessedRef.current = true;
     try {
       const res = await fetch("/api/oauth/xai/manual-code", {
         method: "POST",
@@ -305,28 +293,13 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
       // Authorization code flow - build redirect URI (some providers require fixed ports)
       const appPort = window.location.port || (window.location.protocol === "https:" ? "443" : "80");
-      // Read loopback-ness synchronously from the URL. The isLocalhost *state* is
-      // populated in an effect, so on the render where this flow actually starts it
-      // is still false — which pushed every dashboard, localhost included, into
-      // manual-paste mode and never opened the popup.
-      const dashboardHost = window.location.hostname;
-      const hostIsLoopback = dashboardHost === "localhost" || dashboardHost === "127.0.0.1";
-      // A loopback dashboard must redirect back to the *same* host it was opened
-      // on. Google accepts both localhost and 127.0.0.1 for desktop OAuth clients,
-      // but the browser treats them as different origins — hardcoding "localhost"
-      // while the dashboard runs on 127.0.0.1 makes every popup relay channel
-      // (postMessage / BroadcastChannel / localStorage) silently drop the code.
-      // Only these two spellings are swapped: anything else (LAN IP, public IP,
-      // hostname, [::1]) keeps the previous "localhost" value, which is what
-      // Google's desktop-client allow-list accepts.
-      const loopbackHost = dashboardHost === "127.0.0.1" ? "127.0.0.1" : "localhost";
       let redirectUri;
       if (provider === "codex") {
         redirectUri = "http://localhost:1455/auth/callback";
       } else if (provider === "xai") {
         redirectUri = "http://127.0.0.1:56121/callback";
       } else {
-        redirectUri = `http://${loopbackHost}:${appPort}/callback`;
+        redirectUri = `http://localhost:${appPort}/callback`;
       }
 
       // Build authorize URL first to get codeVerifier/state for codex server-side mode
@@ -394,19 +367,6 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         throw new Error("No authorization URL returned from OAuth provider");
       }
 
-      // Relay session keying: only loopback dashboards get a relay session keyed by
-      // state. Remote dashboards (e.g. production IP, public domain) redirect users
-      // to paste the callback URL because Google rejects non-loopback redirect_uris
-      // and will always try to land the popup on the user's localhost anyway. The
-      // manual-paste path works regardless of how the dashboard was reached.
-      setAuthData({
-        ...data,
-        redirectUri,
-        codexServerSide,
-        xaiServerSide,
-        relaySession: data.relaySession && hostIsLoopback,
-      });
-
       if (provider === "codex" && codexProxyActive) {
         // Proxy active: callback will be handled server-side (auto-exchange) or via channels (fallback)
         setStep("waiting");
@@ -420,14 +380,12 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         if (!popupRef.current) {
           setStep("input");
         }
-      } else if (!hostIsLoopback || provider === "codex" || provider === "xai") {
-        // Non-loopback dashboard, or the fixed-port proxy failed to start: manual
-        // input mode. The auth URL opens in a normal tab and the user pastes the
-        // callback URL back.
+      } else if (!isLocalhost || provider === "codex" || provider === "xai") {
+        // Non-localhost or proxy failed: manual input mode
         setStep("input");
         window.open(data.authUrl, "_blank");
       } else {
-        // Loopback (non-Codex/xAI): Open popup and wait for message
+        // Localhost (non-Codex/xAI): Open popup and wait for message
         setStep("waiting");
         popupRef.current = window.open(data.authUrl, "oauth_popup", "width=600,height=700");
         if (!popupRef.current) {
@@ -438,9 +396,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       setError(err.message);
       setStep("error");
     }
-    // hostIsLoopback is read from window.location inside the callback, so it is
-    // deliberately not a dependency (it cannot change without a navigation).
-  }, [provider, startPolling, oauthMeta, idcConfig, authMode, startProxyFlow]);
+  }, [provider, isLocalhost, startPolling, oauthMeta, idcConfig, authMode, startProxyFlow]);
 
   // Reset state and start OAuth when modal opens
   useEffect(() => {
@@ -484,9 +440,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     }
   }, [isOpen, provider, startOAuthFlow]);
 
-  // Server-side proxy mode (codex/xai fixed-port + trae/windsurf dynamic-port)
-  // and the generic authorization_code relay: poll until the callback is picked
-  // up server-side, then finish the flow.
+  // Server-side proxy mode (codex/xai fixed-port + trae/windsurf dynamic-port):
+  // poll status until the proxy auto-exchanges and saves the connection.
   useEffect(() => {
     const pollProvider = authData?.codexServerSide
       ? "codex"
@@ -494,23 +449,19 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         ? "xai"
         : authData?.proxyProvider
           ? authData.proxyProvider
-          : authData?.relaySession
-            ? provider
-            : null;
+          : null;
     if (!pollProvider || !authData?.state) return;
     if (callbackProcessedRef.current) return;
     let cancelled = false;
     const POLL_INTERVAL_MS = 1500;
-    const POLL_TIMEOUT_MS = 300000; // ~5 minutes
-    if (!pollStartRef.current || pollStartRef.current.state !== authData.state) {
-      pollStartRef.current = { state: authData.state, startedAt: Date.now() };
-    }
-    const startedAt = pollStartRef.current.startedAt;
+    const MAX_ATTEMPTS = 200; // ~5 minutes
+    let attempts = 0;
 
     const tick = async () => {
       if (cancelled || callbackProcessedRef.current) return;
+      attempts += 1;
       try {
-        const res = await fetch(`/api/oauth/${pollProvider}/poll-status?state=${encodeURIComponent(authData.state)}`);
+          const res = await fetch(`/api/oauth/${pollProvider}/poll-status?state=${encodeURIComponent(authData.state)}`);
         const data = await res.json();
         if (cancelled || callbackProcessedRef.current) return;
         if (data.status === "done") {
@@ -519,29 +470,18 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           onSuccess?.();
           return;
         }
-        // Generic relay: the /callback page handed the code to the server. Exchange
-        // it here so the code is consumed by exactly one path even when the popup
-        // channels also delivered it.
-        if (data.status === "received" && data.code) {
-          callbackProcessedRef.current = true;
-          await exchangeTokens(data.code, authData.state);
-          return;
-        }
         if (data.status === "error") {
           callbackProcessedRef.current = true;
-          setError(data.errorDescription || data.error || "Authentication failed");
+          setError(data.error || "Authentication failed");
           setStep("error");
           return;
         }
       } catch {
         // Network error, keep polling
       }
-      if (cancelled || callbackProcessedRef.current) return;
-      if (Date.now() - startedAt >= POLL_TIMEOUT_MS) {
+      if (attempts >= MAX_ATTEMPTS) {
         callbackProcessedRef.current = true;
-        setError(
-          "Authentication timeout — no callback reached the dashboard. Try again, then paste the callback URL from the popup's address bar if it does not complete automatically."
-        );
+        setError("Authentication timeout");
         setStep("error");
         return;
       }
@@ -549,7 +489,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     };
     setTimeout(tick, POLL_INTERVAL_MS);
     return () => { cancelled = true; };
-  }, [authData, onSuccess, provider, exchangeTokens]);
+  }, [authData, onSuccess]);
 
   // Listen for OAuth callback via multiple methods
   useEffect(() => {
@@ -819,40 +759,22 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         {/* Waiting + Manual Input combined (non-device-code, non-proxy) */}
         {(step === "waiting" || step === "input") && !isDeviceCode && !PROXY_OAUTH_PROVIDERS.has(provider) && (
           <>
-            {/* Option A: Auto via popup — only possible on a loopback dashboard.
-                Google rejects any non-loopback redirect_uri for desktop OAuth
-                clients, so a remotely-served dashboard can never receive the code
-                automatically. Showing an endless spinner there reads as a hang. */}
-            {isLocalhost ? (
-              <div className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-sidebar/50">
-                <span className="material-symbols-outlined text-base text-primary animate-spin">
-                  progress_activity
-                </span>
-                <span className="text-sm">
-                  {isXaiProvider ? "Waiting for Grok Build OAuth…" : "Waiting for popup authorization…"}
-                </span>
-              </div>
-            ) : (
-              <div className="px-3 py-2 border border-yellow-500/30 rounded-lg bg-yellow-500/10">
-                <p className="text-sm text-yellow-800 dark:text-yellow-200">
-                  This dashboard is not served from localhost, so the authorization code cannot come
-                  back automatically. After you approve access, your browser will try to open a{" "}
-                  <code className="font-mono text-xs">http://localhost:…/callback?code=…</code>{" "}
-                  address and will probably show a “can’t reach this site” page —{" "}
-                  <strong>that is expected</strong>. Copy the full URL from the address bar and paste
-                  it below to finish connecting.
-                </p>
-              </div>
-            )}
+            {/* Option A: Auto via popup */}
+            <div className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-sidebar/50">
+              <span className="material-symbols-outlined text-base text-primary animate-spin">
+                progress_activity
+              </span>
+              <span className="text-sm">
+                {isXaiProvider ? "Waiting for Grok Build OAuth…" : "Waiting for popup authorization…"}
+              </span>
+            </div>
 
-            {/* Divider — only an "alternative" when the automatic path exists */}
-            {isLocalhost && (
-              <div className="flex items-center gap-3 my-1">
-                <div className="flex-1 h-px bg-border" />
-                <span className="text-xs text-text-muted uppercase tracking-wider">Or paste callback URL manually</span>
-                <div className="flex-1 h-px bg-border" />
-              </div>
-            )}
+            {/* Divider */}
+            <div className="flex items-center gap-3 my-1">
+              <div className="flex-1 h-px bg-border" />
+              <span className="text-xs text-text-muted uppercase tracking-wider">Or paste callback URL manually</span>
+              <div className="flex-1 h-px bg-border" />
+            </div>
 
             {/* Option B: Manual paste */}
             <div className="space-y-4">
