@@ -3,8 +3,11 @@
 // Rewrite Antigravity IDE markers so upstream AG 2.x backend accepts the request.
 // User-Agent header (antigravity/<old>) and body.metadata.ideVersion are forced
 // to a known-good IDE version. Hardcoded MVP — toggle/version configurable later.
-
-const ANTIGRAVITY_IDE_VERSION = "1.23.2";
+//
+// Measured 2026-09-06: upstream gates the model catalog on this version string.
+//   1.23.2, 2.1.1 → older catalogs, no gemini-3.8-*
+//   3.0.0+        → full gemini-3.8 family, defaultAgentModelId=gemini-3.8-flash-high
+const ANTIGRAVITY_IDE_VERSION = "3.0.0";
 const ANTIGRAVITY_IDE_VERSION_OVERRIDE_ENABLED = true;
 
 function shouldRewriteMetadata(metadata) {

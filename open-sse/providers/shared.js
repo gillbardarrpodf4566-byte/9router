@@ -74,10 +74,16 @@ export const KIMI_CODING_BASE_URL = "https://api.kimi.com/coding/v1/messages";
 export const OPENAI_COMPAT_BASE = "https://api.openai.com/v1";
 export const ANTHROPIC_COMPAT_BASE = "https://api.anthropic.com/v1";
 
-// Official Antigravity IDE Desktop 2.1.1 fingerprint captured from macOS arm64.
-// Keep this static even when 9router runs on Linux: the provider profile is
-// intentionally matching the IDE client, not the server host.
-export const ANTIGRAVITY_IDE_VERSION = "2.1.1";
+// Antigravity IDE fingerprint. Keep this static even when 9router runs on Linux:
+// the provider profile is intentionally matching the IDE client, not the server host.
+//
+// Upstream gates the model catalog on this version string. Measured 2026-09-06 via
+// v1internal:fetchAvailableModels on daily-cloudcode-pa.googleapis.com:
+//   2.1.1 -> 25 models; no gemini-3.8-*, and no gemini-3.7-flash high/medium/low
+//   3.0.0 -> 33 models; full gemini-3.8-flash family, defaultAgentModelId=gemini-3.8-flash-high
+// Anything >= 3.0.0 returns the same 33. Do NOT lower this without re-checking the
+// catalog: a stale version makes newer models silently vanish instead of erroring.
+export const ANTIGRAVITY_IDE_VERSION = "3.0.0";
 export const ANTIGRAVITY_IDE_BASE_URL = "https://daily-cloudcode-pa.googleapis.com";
 export const ANTIGRAVITY_IDE_USER_AGENT = `antigravity/ide/${ANTIGRAVITY_IDE_VERSION} darwin/arm64`;
 

@@ -5,6 +5,7 @@ import { GEMINI_CONFIG } from "@/lib/oauth/constants/oauth";
 import { refreshGoogleToken, refreshCodexToken, updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveOllamaLocalHost } from "open-sse/config/providers.js";
 import { getModelsByProviderId } from "open-sse/config/providerModels.js";
+import { ANTIGRAVITY_IDE_BASE_URL, ANTIGRAVITY_IDE_USER_AGENT } from "open-sse/providers/shared.js";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveKimchiModels } from "open-sse/services/kimchiModels.js";
 import { resolveQoderModels } from "open-sse/services/qoderModels.js";
@@ -69,6 +70,22 @@ const appendCodexReviewModels = (models) => models.flatMap((model) => {
 });
 
 const parseCodexModels = (data) => appendCodexReviewModels(parseOpenAIStyleModels(data));
+
+// Antigravity's fetchAvailableModels returns `models` as an object map keyed by
+// model id (not an array), and mixes in internal + tab-completion entries that are
+// not selectable chat models. Display names are deliberately decoupled from ids
+// upstream (e.g. gemini-3-flash-agent is surfaced as "Gemini 3.5 Flash (High)").
+const parseAntigravityModels = (data) => {
+  const m = data?.models;
+  const entries = Array.isArray(m)
+    ? m.map((x) => [x?.id || x?.model || x?.name, x])
+    : m && typeof m === "object"
+      ? Object.entries(m)
+      : [];
+  return entries
+    .filter(([id, info]) => id && !info?.isInternal && !/^(tab_|chat_)/.test(String(id)))
+    .map(([id, info]) => ({ id, name: info?.displayName || info?.name || id }));
+};
 
 const createOpenAIModelsConfig = (url) => ({
   url,
@@ -161,13 +178,21 @@ const PROVIDER_MODELS_CONFIG = {
     })
   },
   antigravity: {
-    url: "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:models",
+    // The old sandbox ":models" verb 404s on every host; fetchAvailableModels on
+    // the daily host is what actually serves the IDE model catalog. It returns
+    // `models` as an object map (not an array) and gates the catalog on the IDE
+    // version in the User-Agent, so both must be handled here.
+    url: `${ANTIGRAVITY_IDE_BASE_URL}/v1internal:fetchAvailableModels`,
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "User-Agent": ANTIGRAVITY_IDE_USER_AGENT,
+      "x-request-source": "local",
+    },
     authHeader: "Authorization",
     authPrefix: "Bearer ",
     body: {},
-    parseResponse: (data) => data.models || []
+    parseResponse: parseAntigravityModels
   },
   github: {
     url: "https://api.githubcopilot.com/models",
