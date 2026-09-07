@@ -140,9 +140,14 @@ export const CLOUD_CODE_API = {
     loadCodeAssist: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
     onboardUser: "https://cloudcode-pa.googleapis.com/v1internal:onboardUser",
   },
-  // Project discovery (loadCodeAssist/onboardUser) stays on PROD — the daily host
-  // rejects these auth/onboarding calls. Only chat traffic uses the daily host
-  // (see transport.apiEndpoint in registry/antigravity.js, set to bypass prod 429).
+  // Project discovery (loadCodeAssist/onboardUser) stays on PROD. Both endpoints
+  // actually respond 200 on daily today with identical data (project + allowedTiers),
+  // but:
+  //   - loadCodeAssist is deliberately left on PROD because nothing gains by moving it,
+  //     and its payload is header-fingerprint sensitive (see ANTIGRAVITY_LOAD_CODE_
+  //     ASSIST_HEADERS in this file).
+  //   - onboardUser is unverified on daily; keeping it on the known-good host is safer.
+  // Only chat traffic uses the daily host (below), which was chosen to bypass PROD 429s.
   antigravity: {
     loadCodeAssist: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
     onboardUser: "https://cloudcode-pa.googleapis.com/v1internal:onboardUser",

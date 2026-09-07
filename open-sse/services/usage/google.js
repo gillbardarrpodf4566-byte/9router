@@ -4,6 +4,7 @@
 
 import { CLIENT_METADATA } from "../../config/appConstants.js";
 import { ANTIGRAVITY_IDE_USER_AGENT, ANTIGRAVITY_IDE_VERSION, ANTIGRAVITY_OAUTH_CLIENT } from "../../providers/shared.js";
+import { getModelsByProviderId } from "../../config/providerModels.js";
 import { U, parseResetTime, normalizeCloudCodeProjectId, fetchWithTimeout } from "./shared.js";
 
 // Antigravity API config (from Quotio) — urls from registry, oauth client + dynamic UA kept here
@@ -159,24 +160,15 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
 
     // Parse model quotas (inspired by vscode-antigravity-cockpit)
     if (data.models) {
-      // Filter only recommended/important models (must match PROVIDER_MODELS ag ids)
-      const importantModels = [
-        'gemini-3.7-flash-high',
-        'gemini-3.7-flash-medium',
-        'gemini-3.7-flash-low',
-        'gemini-3.6-flash-high',
-        'gemini-3.6-flash-medium',
-        'gemini-3.6-flash-low',
-        'gemini-3.5-flash-low',
-        'gemini-3.5-flash-extra-low',
-        'gemini-pro-agent',
-        'gemini-3.1-pro-low',
-        'claude-sonnet-4-6',
-        'claude-opus-4-6-thinking',
-        'gpt-oss-120b-medium',
-        // Image generation models
-        'gemini-3.1-flash-image',
-      ];
+      // Derive the visible set from the registry rather than hardcoding a copy of it
+      // here. This used to be a hand-maintained list annotated "must match
+      // PROVIDER_MODELS ag ids", and it drifted: gemini-3.8-flash-* was added to the
+      // registry but never here, so upstream quotaInfo for the whole 3.8 family was
+      // silently discarded and the quota tracker showed nothing for those models.
+      // Sourcing it from the registry makes the two impossible to desync.
+      const importantModels = new Set(
+        getModelsByProviderId("antigravity").map((m) => m.id)
+      );
 
       for (const [modelKey, info] of Object.entries(data.models)) {
         // Skip models without quota info
@@ -184,8 +176,8 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
           continue;
         }
 
-        // Skip internal models and non-important models
-        if (info.isInternal || !importantModels.includes(modelKey)) {
+        // Skip internal models and anything the registry does not expose
+        if (info.isInternal || !importantModels.has(modelKey)) {
           continue;
         }
 

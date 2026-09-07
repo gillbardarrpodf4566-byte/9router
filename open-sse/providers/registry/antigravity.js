@@ -36,8 +36,18 @@ export default {
       },
     },
     usage: {
-      // Discovery (quota/project) on PROD; daily host rejects these.
-      quotaApiUrl: "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+      // Quota discovery MUST use the same host as chat, because the model catalog
+      // is host-specific. Measured 2026-09-06 with IDE UA 3.0.0:
+      //   daily -> 33 models, includes gemini-3.8-flash-{high,medium,low,tiered}
+      //            each carrying quotaInfo, defaultAgentModelId=gemini-3.8-flash-high
+      //   PROD  -> 28 models, no gemini-3.8-* at all
+      // Chat runs against daily (transport.baseUrls below) to bypass PROD 429s, so
+      // pointing quota at PROD left the whole 3.8 family with no quota entry.
+      quotaApiUrl: `${ANTIGRAVITY_IDE_BASE_URL}/v1internal:fetchAvailableModels`,
+      // loadCodeAssist / onboardUser deliberately stay on PROD. Both do answer 200 on
+      // daily today with identical data (project + allowedTiers), but onboarding is
+      // header-fingerprint sensitive — see ANTIGRAVITY_LOAD_CODE_ASSIST_HEADERS in
+      // config/appConstants.js — and nothing is gained by moving it.
       loadProjectApiUrl: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
       tokenUrl: "https://oauth2.googleapis.com/token",
     },
