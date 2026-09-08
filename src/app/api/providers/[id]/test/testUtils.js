@@ -350,20 +350,63 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
   }
 
   if (connection.provider === "gemini-cli" || connection.provider === "antigravity") {
-    const initial = await probeCloudCodeAssistAccess(connection, accessToken, effectiveProxy);
-    if (initial.valid) return { valid: true, error: null, refreshed, newTokens };
+    // Test both auth (loadCodeAssist) AND real inference (generateContent) so we catch entitlement faults.
+    let probeToken = accessToken;
+    let refreshed = false;
+    let newTokens = null;
+    let resProbe, retryProbed = false;
 
-    if (initial.status === 401 && config.refreshable && !refreshed && connection.refreshToken) {
-      const tokens = await refreshOAuthToken(connection);
-      if (tokens?.accessToken) {
-        const retry = await probeCloudCodeAssistAccess(connection, tokens.accessToken, effectiveProxy);
-        if (retry.valid) return { valid: true, error: null, refreshed: true, newTokens: tokens };
-        return { valid: false, error: retry.error, refreshed: true, newTokens: tokens };
+    // Probe loadCodeAssist first (auth-only endpoint)
+    const authProbe = await probeCloudCodeAssistAccess(connection, probeToken, effectiveProxy);
+    if (!authProbe.valid) {
+      // If 401 and refreshable, try once then report result
+      if (config.refreshable && !refreshed && connection.refreshToken && authProbe.status === 401) {
+        const tokens = await refreshOAuthToken(connection);
+        if (tokens?.accessToken) {
+          probeToken = tokens.accessToken;
+          refreshed = true;
+          newTokens = tokens;
+          retryProbed = true;
+          const retryProbe = await probeCloudCodeAssistAccess(connection, probeToken, effectiveProxy);
+          return { valid: retryProbe.valid, error: retryProbe.error, refreshed, newTokens };
+        }
       }
-      return { valid: false, error: "Token invalid or revoked", refreshed: false };
+      return { valid: false, error: authProbe.error, refreshed, newTokens };
     }
 
-    return { valid: false, error: initial.error, refreshed };
+    // Auth OK but no chat? That's an entitlement fault — mark invalid immediately.
+    const CHAT_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent";
+    const CHAT_BODY = JSON.stringify({
+      project: connection.projectId || "test-" + crypto.randomUUID().slice(0, 6),
+      model: "gemini-3-flash",  // known-good baseline
+      userAgent: "antigravity",
+      requestType: "agent",
+      requestId: crypto.randomUUID(),
+      request: { contents: [{ role: "user", parts: [{ text: "hi" }] }], generationConfig: { maxOutputTokens: 1 }, sessionId: crypto.randomUUID() + Date.now() },
+    });
+
+    try {
+      resProbe = await fetchWithConnectionProxy(CHAT_URL, { method: "POST", headers: { "Authorization": `Bearer ${probeToken}`, "User-Agent": "antigravity/ide/3.0.0 darwin/arm64", "X-Client-Name": "antigravity", "X-Client-Version": "3.0.0", "Content-Type": "application/json" }, body: CHAT_BODY }, effectiveProxy);
+      if (!resProbe.ok) {
+        const text = await resProbe.text().catch(() => "");
+        const errorMsg = parseProviderErrorMessage(text, `chat returned ${resProbe.status}`);
+        // If 401 on chat too, attempt one more refresh (belt-and-braces)
+        if (config.refreshable && !refreshed && connection.refreshToken && resProbe.status === 401) {
+          const tokens = await refreshOAuthToken(connection);
+          if (tokens?.accessToken) {
+            const finalRes = await fetchWithConnectionProxy(CHAT_URL, { method: "POST", headers: { "Authorization": `Bearer ${tokens.accessToken}`, "User-Agent": "antigravity/ide/3.0.0 darwin/arm64", "X-Client-Name": "antigravity", "X-Client-Version": "3.0.0", "Content-Type": "application/json" }, body: CHAT_BODY }, effectiveProxy);
+            if (finalRes.ok) {
+              const finalText = await finalRes.text().catch(() => "");
+              return { valid: true, error: null, refreshed: true, newTokens: tokens };
+            }
+            const finalText2 = await finalRes.text().catch(() => "");
+            return { valid: false, error: parseProviderErrorMessage(finalText2, `chat still fails after token refresh: ${finalRes.status}`), refreshed: true, newTokens: tokens };
+          }
+        }
+        return { valid: false, error: errorMsg, refreshed, newTokens };
+      }
+    } catch (e) { return { valid: false, error: e.message, refreshed, newTokens }; }
+    return { valid: true, error: null, refreshed, newTokens };
   }
 
   if (connection.provider === "cline") {

@@ -17,9 +17,8 @@ const GEMINI_CLI_MODELS_URL = "https://cloudcode-pa.googleapis.com/v1internal:fe
 
 // The /codex/models endpoint gates each entry by minimal_client_version against this
 // value, and codex CLI's own manifest (openai/codex codex-rs/models-manager/models.json)
-// already requires 0.144.0 for its newest models, so a stale client_version here comes
-// back 200 with those entries quietly missing instead of erroring.
-const CODEX_CLIENT_VERSION = "0.144.6";
+// requires 0.153.0 for gpt-6-astra. Bumping to 0.153.0 ensures the newest models surface.
+const CODEX_CLIENT_VERSION = "0.153.0";
 const CODEX_MODELS_URL = `https://chatgpt.com/backend-api/codex/models?client_version=${CODEX_CLIENT_VERSION}`;
 
 const parseOpenAIStyleModels = (data) => {

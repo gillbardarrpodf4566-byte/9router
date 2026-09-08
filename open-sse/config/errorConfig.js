@@ -40,6 +40,10 @@ export const TRANSIENT_COOLDOWN_MS = 30 * 1000;
 
 // Hard cap for provider-reported rate limit cooldown (e.g. codex resets_at can be 5-6h)
 export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
+// Permanent entitlement/cooldowns — these errors indicate the account isn't entitled to use the service,
+// not a transient issue. Don't treat as transient.
+const COOLDOWN_PERM = 24 * 60 * 60 * 1000;  // 24h for entitlement faults like permission_denied, onboard-required, cloudaicompanion
+const COOLDOWN_LONGER = 2 * 60 * 60 * 1000;  // 2h for other perms / access-denied that might self-heal faster than 24h
 
 // Cooldown durations (ms)
 const COOLDOWN = {
@@ -58,6 +62,9 @@ const COOLDOWN = {
  */
 export const ERROR_RULES = [
   // --- Text-based rules (checked first, order = priority) ---
+  // NOTE: the matcher walks this array in order and tests both `text` and `status`
+  // on each entry, so every text rule MUST precede the status rules below or the
+  // status rule will win and the longer cooldown will never apply.
   { text: "no credentials",           cooldownMs: COOLDOWN.long },
   { text: "request not allowed",      cooldownMs: COOLDOWN.short },
   { text: "improperly formed request", cooldownMs: COOLDOWN.long },
@@ -67,10 +74,25 @@ export const ERROR_RULES = [
   { text: "capacity",                 backoff: true },
   { text: "overloaded",               backoff: true },
 
+  // --- Permanent entitlement / eligibility faults ---
+  // These are account- or network-level conditions that do not heal by retrying, so a
+  // 2-minute lock just produces an endless pick→fail→lock loop that burns latency and
+  // makes the account look "connected but never used". Observed verbatim from upstream:
+  //   antigravity generateContent 403 -> PERMISSION_DENIED (account not entitled)
+  //   antigravity generateContent 400 -> "User location is not supported for the API use."
+  { text: "permission_denied",              cooldownMs: COOLDOWN_PERM },
+  { text: "permission denied",              cooldownMs: COOLDOWN_PERM },
+  { text: "not supported for the api use",  cooldownMs: COOLDOWN_PERM },
+
   // --- Status-based rules (fallback when text doesn't match) ---
   { status: 401, cooldownMs: COOLDOWN.long },
   { status: 402, cooldownMs: COOLDOWN.long },
-  { status: 403, cooldownMs: COOLDOWN.long },
+  // 403 is usually an entitlement/authorization fault rather than a transient one.
+  // Raised from COOLDOWN.long (2m) to COOLDOWN_LONGER (2h): long enough to stop the
+  // retry storm, short enough to self-heal if the upstream 403 was in fact temporary.
+  // Antigravity sends an empty body here (surfacing as "[403]: HTTP 403"), so the text
+  // rules above cannot catch it — this status rule is what actually applies.
+  { status: 403, cooldownMs: COOLDOWN_LONGER },
   { status: 404, cooldownMs: COOLDOWN.long },
   { status: 429, backoff: true },
 ];
