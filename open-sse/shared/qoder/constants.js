@@ -53,13 +53,19 @@ export const QODER_MODEL_MAP = {
   efficient: "efficient",
   lite: "lite",
   // Frontier models
-  qmodel: "qmodel",
+  qmodel_38max: "qmodel_38max",
+  qfmodel: "qfmodel",
   qmodel_latest: "qmodel_latest",
+  qmodel: "qmodel",
+  kmodel_latest: "kmodel_latest",
+  kmodel: "kmodel",
+  gmodel: "gmodel",
+  gfmodel: "gfmodel",
   dmodel: "dmodel",
   dfmodel: "dfmodel",
-  gm51model: "gm51model",
-  kmodel: "kmodel",
   mmodel: "mmodel",
+  // Legacy alias backward compat
+  gm51model: "gm51model",
 };
 
 // RSA public key for COSY encryption (extracted from Qoder IDE v0.9).
