@@ -124,6 +124,32 @@ function truncate(s, n) {
   return s && s.length > n ? `${s.slice(0, n)}...` : s || "";
 }
 
+// Fallback model_config entries for official client models that may not yet be
+// published in the upstream /algo/api/v2/model/list endpoint (e.g. smodel/cmodel).
+// Captured directly from official Qoder Desktop client configuration.
+const BUILTIN_MODEL_CONFIGS = {
+  smodel: {
+    key: "smodel",
+    name: "smodel",
+    display_name: "Sonus",
+    format: "openai",
+    max_input_tokens: 180000,
+    max_output_tokens: 32768,
+    is_reasoning: true,
+    is_vl: true,
+  },
+  cmodel: {
+    key: "cmodel",
+    name: "cmodel",
+    display_name: "Cantus",
+    format: "openai",
+    max_input_tokens: 200000,
+    max_output_tokens: 32768,
+    is_reasoning: true,
+    is_vl: true,
+  },
+};
+
 /**
  * Map the OpenAI-style request body into the exact shape Qoder expects.
  */
@@ -138,12 +164,15 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
     // not be populated yet on first ever call for this credential.
     const refreshed = await resolveQoderModels(credentials, { forceRefresh: true, log, proxyOptions, signal });
     const retried = refreshed?.rawConfigs.get(qoderKey);
-    if (!retried) {
+    if (retried) {
+      modelConfig = { ...retried, key: qoderKey };
+    } else if (BUILTIN_MODEL_CONFIGS[qoderKey]) {
+      modelConfig = { ...BUILTIN_MODEL_CONFIGS[qoderKey] };
+    } else {
       throw new Error(
         `qoder: model_config for "${qoderKey}" not yet known (run a model list fetch or check upstream connectivity)`,
       );
     }
-    modelConfig = { ...retried, key: qoderKey };
   }
 
   const { messages, systemText } = normalizeMessages(body.messages || []);
