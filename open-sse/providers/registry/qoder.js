@@ -31,6 +31,8 @@ export default {
     { id: "performance", name: "Performance" },
     { id: "efficient", name: "Efficient" },
     { id: "lite", name: "Lite" },
+    { id: "smodel", name: "Sonus" },
+    { id: "cmodel", name: "Cantus" },
     { id: "qmodel_38max", name: "Qwen3.8-Max" },
     { id: "qfmodel", name: "Qwen3.8-Flash" },
     { id: "qmodel_latest", name: "Qwen3.7-Max" },

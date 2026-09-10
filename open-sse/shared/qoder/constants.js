@@ -53,6 +53,8 @@ export const QODER_MODEL_MAP = {
   efficient: "efficient",
   lite: "lite",
   // Frontier models
+  smodel: "smodel",
+  cmodel: "cmodel",
   qmodel_38max: "qmodel_38max",
   qfmodel: "qfmodel",
   qmodel_latest: "qmodel_latest",
