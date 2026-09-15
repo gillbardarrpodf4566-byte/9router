@@ -222,7 +222,7 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
       is_retry: false,
       source: 1,
       version: "3",
-      session_type: "qodercli",
+      session_type: "assistant",
       agent_id: "agent_common",
       task_id: "common",
       code_language: "",
@@ -232,7 +232,10 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
       system: systemText,
       messages,
       tools: Array.isArray(tools) ? tools : [],
-      parameters: { max_tokens: maxTokens },
+      parameters: {
+        max_tokens: maxTokens,
+        ...(effort ? { reasoning_effort: effort } : {}),
+      },
       chat_context: {
         chatPrompt: "",
         imageUrls: null,
@@ -243,10 +246,19 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
             is_reasoning: isReasoning,
             ...(effort ? { reasoning_effort: effort } : {}),
           },
+          ideModelConfigOverride: modelConfigPayload,
           originalContent: lastUser,
         },
         features: [],
         text: lastUser,
+      },
+      extra: {
+        modelConfig: {
+          key: qoderKey,
+          is_reasoning: isReasoning,
+          ...(effort ? { reasoning_effort: effort } : {}),
+        },
+        ideModelConfigOverride: modelConfigPayload,
       },
       model_config: modelConfigPayload,
       business: {
