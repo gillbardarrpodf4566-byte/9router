@@ -194,6 +194,21 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
   const sessionId = stableHash("qoder-session", psd.userId, qoderKey);
   const recordId = stableChatRecordId(qoderKey, messages, tools, maxTokens);
 
+  // Resolve reasoning effort:
+  // 1. Explicit from client: body.reasoning_effort or body.thinking?.effort or body.thinking_effort
+  // 2. Default for reasoning models: "xhigh" (matching official Qoder IDE default)
+  let effort = body.reasoning_effort || body.thinking?.effort || body.thinking_effort || null;
+  if (!effort && isReasoning) {
+    effort = "xhigh";
+  }
+
+  const modelConfigPayload = {
+    ...modelConfig,
+    key: qoderKey,
+    is_reasoning: isReasoning,
+    ...(effort ? { reasoning_effort: effort } : {}),
+  };
+
   return {
     qoderKey,
     payload: {
@@ -223,13 +238,17 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
         imageUrls: null,
         extra: {
           context: [],
-          modelConfig: { key: qoderKey, is_reasoning: isReasoning },
+          modelConfig: {
+            key: qoderKey,
+            is_reasoning: isReasoning,
+            ...(effort ? { reasoning_effort: effort } : {}),
+          },
           originalContent: lastUser,
         },
         features: [],
         text: lastUser,
       },
-      model_config: modelConfig,
+      model_config: modelConfigPayload,
       business: {
         product: "cli",
         version: "1.0.0",
@@ -240,7 +259,7 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
         begin_at: Date.now(),
       },
     },
-    modelConfig,
+    modelConfig: modelConfigPayload,
   };
 }
 
