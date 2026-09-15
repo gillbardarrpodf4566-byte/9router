@@ -234,8 +234,7 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
       tools: Array.isArray(tools) ? tools : [],
       parameters: {
         max_tokens: maxTokens,
-        // Agent 场景使用 low 思考深度，避免单步决策过度消耗导致 timeout
-        ...(effort ? { reasoning_effort: effort } : { reasoning_effort: "low" }),
+        ...(effort ? { reasoning_effort: effort } : {}),
       },
       chat_context: {
         chatPrompt: "",
@@ -245,7 +244,7 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
           modelConfig: {
             key: qoderKey,
             is_reasoning: isReasoning,
-            ...(effort ? { reasoning_effort: effort } : { reasoning_effort: "low" }),
+            ...(effort ? { reasoning_effort: effort } : {}),
           },
           ideModelConfigOverride: modelConfigPayload,
           originalContent: lastUser,
@@ -257,7 +256,7 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
         modelConfig: {
           key: qoderKey,
           is_reasoning: isReasoning,
-          ...(effort ? { reasoning_effort: effort } : { reasoning_effort: "low" }),
+          ...(effort ? { reasoning_effort: effort } : {}),
         },
         ideModelConfigOverride: modelConfigPayload,
       },
