@@ -15,7 +15,8 @@ import {
   KIRO_AGENTIC_SYSTEM_PROMPT,
   resolveDefaultProfileArn,
   buildKiroAdditionalModelRequestFieldsForModel,
-  usesKiroNativeGptEffort
+  usesKiroNativeGptEffort,
+  supportsKiroAdditionalModelRequestFields
 } from "../../config/kiroConstants.js";
 import { parseDataUri } from "../concerns/image.js";
 import { DEFAULT_IMAGE_MIME } from "../schema/index.js";
@@ -314,7 +315,8 @@ export function openaiToKiroRequest(model, body, stream, credentials) {
   const { upstream: upstreamModel, agentic } = modelIntent;
   const thinkingBody = applyKiroThinkingOverride(body, modelIntent.thinkingOverride);
   const thinkingBudget = resolveKiroThinkingBudget(thinkingBody, credentials?.rawHeaders, modelIntent.model);
-  const additionalModelRequestFields = buildKiroAdditionalModelRequestFieldsForModel(thinkingBody, upstreamModel);
+  const defaultEffort = thinkingBudget !== null && supportsKiroAdditionalModelRequestFields(upstreamModel) ? "high" : null;
+  const additionalModelRequestFields = buildKiroAdditionalModelRequestFieldsForModel(thinkingBody, upstreamModel, defaultEffort);
   const usesNativeGptEffort = usesKiroNativeGptEffort(thinkingBody, upstreamModel);
 
   const { specs: toolSpecs, nameMap } = normalizeKiroToolSpecs(tools);

@@ -199,10 +199,10 @@ function extractKiroGptEffortLevel(body) {
   return null;
 }
 
-export function buildKiroAdditionalModelRequestFields(body, effortPath = "output_config") {
+export function buildKiroAdditionalModelRequestFields(body, effortPath = "output_config", defaultEffort = null) {
   const effort = effortPath === "reasoning"
     ? extractKiroGptEffortLevel(body)
-    : extractKiroEffortLevel(body);
+    : (extractKiroEffortLevel(body) || defaultEffort);
   if (!effort) return undefined;
   if (effortPath === "reasoning") {
     // Mirrors Kiro CLI/KAS buildEffortRequestFields("reasoning") for GPT.
@@ -245,10 +245,10 @@ export function usesKiroNativeGptEffort(body, model) {
     && extractKiroGptEffortLevel(body) !== null;
 }
 
-export function buildKiroAdditionalModelRequestFieldsForModel(body, model) {
+export function buildKiroAdditionalModelRequestFieldsForModel(body, model, defaultEffort = null) {
   const effortPath = resolveKiroEffortPath(model);
   if (!effortPath) return undefined;
-  return buildKiroAdditionalModelRequestFields(body, effortPath);
+  return buildKiroAdditionalModelRequestFields(body, effortPath, defaultEffort);
 }
 
 /**

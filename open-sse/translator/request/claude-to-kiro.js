@@ -28,6 +28,7 @@ import {
   resolveDefaultProfileArn,
   buildKiroAdditionalModelRequestFieldsForModel,
   usesKiroNativeGptEffort,
+  supportsKiroAdditionalModelRequestFields,
 } from "../../config/kiroConstants.js";
 import { DEFAULT_IMAGE_MIME } from "../schema/index.js";
 import { ROLE, CLAUDE_BLOCK } from "../schema/index.js";
@@ -227,7 +228,8 @@ export function claudeToKiroRequest(model, body, stream, credentials) {
   const { upstream: upstreamModel, agentic } = modelIntent;
   const thinkingBody = applyKiroThinkingOverride(body, modelIntent.thinkingOverride);
   const thinkingBudget = resolveKiroThinkingBudget(thinkingBody, credentials?.rawHeaders, modelIntent.model);
-  const additionalModelRequestFields = buildKiroAdditionalModelRequestFieldsForModel(thinkingBody, upstreamModel);
+  const defaultEffort = thinkingBudget !== null && supportsKiroAdditionalModelRequestFields(upstreamModel) ? "high" : null;
+  const additionalModelRequestFields = buildKiroAdditionalModelRequestFieldsForModel(thinkingBody, upstreamModel, defaultEffort);
   const usesNativeGptEffort = usesKiroNativeGptEffort(thinkingBody, upstreamModel);
 
   const { specs: toolSpecs, nameMap } = normalizeKiroToolSpecs(tools);

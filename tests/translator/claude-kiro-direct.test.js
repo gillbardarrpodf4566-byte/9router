@@ -124,6 +124,19 @@ describe("Claude → Kiro (direct route)", () => {
     expect(out.systemPrompt).toContain("<max_thinking_length>24576</max_thinking_length>");
   });
 
+  it("emits adaptive additionalModelRequestFields with effort high for claude-sonnet-5-thinking without explicit effort", () => {
+    const out = C2K({
+      messages: [{ role: "user", content: "think via synthetic alias" }],
+    }, null, "claude-sonnet-5-thinking");
+
+    expect(out.additionalModelRequestFields).toEqual({
+      thinking: { type: "adaptive", display: "summarized" },
+      output_config: { effort: "high" },
+    });
+    expect(out.thinking).toBeUndefined();
+    expect(out.systemPrompt).toContain("<max_thinking_length>16000</max_thinking_length>");
+  });
+
   it("maps Claude-format effort to GPT-5.6 reasoning fields without legacy prompt tags", () => {
     const out = C2K({
       output_config: { effort: "low" },

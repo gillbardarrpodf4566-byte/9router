@@ -566,6 +566,24 @@ describe("openaiToKiroRequest", () => {
       const result = openaiToKiroRequest("claude-sonnet-4.6-thinking", body, true, {});
 
       expect(systemPromptOf(result)).toContain("<max_thinking_length>16000</max_thinking_length>");
+      expect(result.additionalModelRequestFields).toEqual({
+        thinking: { type: "adaptive", display: "summarized" },
+        output_config: { effort: "high" },
+      });
+    });
+
+    it("emits adaptive additionalModelRequestFields with effort high for claude-sonnet-5-thinking", () => {
+      const body = {
+        messages: [{ role: "user", content: "Think adaptively by model alias" }]
+      };
+
+      const result = openaiToKiroRequest("claude-sonnet-5-thinking", body, true, {});
+
+      expect(result.additionalModelRequestFields).toEqual({
+        thinking: { type: "adaptive", display: "summarized" },
+        output_config: { effort: "high" },
+      });
+      expect(systemPromptOf(result)).toContain("<max_thinking_length>16000</max_thinking_length>");
     });
 
     it("keeps top-level systemPrompt stable across turns", () => {
