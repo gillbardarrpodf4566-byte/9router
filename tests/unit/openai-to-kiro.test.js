@@ -11,7 +11,10 @@ import { openaiToKiroRequest } from "../../open-sse/translator/request/openai-to
 
 const contentOf = (result) =>
   result.conversationState.currentMessage.userInputMessage.content;
-const systemPromptOf = (result) => result.systemPrompt || "";
+// The top-level systemPrompt wire field was removed: upstream rejects it with
+// 400 REQUEST_BODY_INVALID. Thinking/agentic/system instructions now live in
+// the first user turn's content, so prompt-shape assertions read that content.
+const systemPromptOf = (result) => contentOf(result);
 
 describe("openaiToKiroRequest", () => {
   describe("basic message conversion", () => {
@@ -331,8 +334,6 @@ describe("openaiToKiroRequest", () => {
       expect(result.additionalModelRequestFields).toEqual({
         reasoning: { effort },
       });
-      expect(systemPromptOf(result)).not.toContain("<thinking_mode>");
-      expect(systemPromptOf(result)).not.toContain("<max_thinking_length>");
       expect(contentOf(result)).not.toContain("<thinking_mode>");
       expect(contentOf(result)).not.toContain("<max_thinking_length>");
     });
@@ -586,7 +587,20 @@ describe("openaiToKiroRequest", () => {
       expect(systemPromptOf(result)).toContain("<max_thinking_length>16000</max_thinking_length>");
     });
 
-    it("keeps top-level systemPrompt stable across turns", () => {
+    it("omits the top-level systemPrompt (upstream rejects it with REQUEST_BODY_INVALID)", () => {
+      const body = {
+        reasoning_effort: "high",
+        messages: [{ role: "user", content: "No top-level systemPrompt on the wire" }]
+      };
+
+      const result = openaiToKiroRequest("claude-sonnet-5", body, true, {});
+
+      expect(result.systemPrompt).toBeUndefined();
+      // The thinking instruction must survive in the first user turn instead.
+      expect(contentOf(result)).toContain("<max_thinking_length>");
+    });
+
+    it("keeps the embedded thinking instruction stable across turns", () => {
       const first = openaiToKiroRequest(
         "claude-sonnet-4.6-thinking",
         { messages: [{ role: "user", content: "first" }] },
@@ -600,9 +614,12 @@ describe("openaiToKiroRequest", () => {
         {}
       );
 
-      expect(first.systemPrompt).toBe(second.systemPrompt);
-      expect(first.systemPrompt).not.toContain("Current time");
-      expect(first.conversationState.currentMessage.userInputMessage.content).toContain("Current time");
+      expect(first.systemPrompt).toBeUndefined();
+      expect(second.systemPrompt).toBeUndefined();
+      expect(contentOf(first)).toContain("<max_thinking_length>16000</max_thinking_length>");
+      expect(contentOf(second)).toContain("<max_thinking_length>16000</max_thinking_length>");
+      expect(contentOf(first)).toContain("Current time");
+      expect(contentOf(second)).toContain("Current time");
     });
 
     it("replays frozen msg0 for explicit Kiro sessions while keeping current time fresh", () => {

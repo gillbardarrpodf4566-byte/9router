@@ -244,9 +244,9 @@ export function claudeToKiroRequest(model, body, stream, credentials) {
     ? (credentials?.providerSpecificData?.profileArn || "")
     : (credentials?.providerSpecificData?.profileArn || resolveDefaultProfileArn(authMethod));
 
-  // Kiro CLI/KAS sends system prompt as top-level `systemPrompt`. Keep a
-  // content fallback too because the CodeWhisperer surface does not always
-  // enforce top-level systemPrompt for direct calls.
+  // Upstream rejects a top-level systemPrompt with 400 REQUEST_BODY_INVALID,
+  // so thinking instructions, the agentic protocol, and the client system
+  // prompt all ride in the first user turn's content prefix instead.
   const timestamp = new Date().toISOString();
   const systemPromptParts = [];
   if (thinkingBudget !== null && !usesNativeGptEffort) {
@@ -329,7 +329,8 @@ export function claudeToKiroRequest(model, body, stream, credentials) {
   };
 
   if (profileArn) payload.profileArn = profileArn;
-  if (systemPrompt) payload.systemPrompt = systemPrompt;
+  // Upstream Amazon CodeWhisperer/Kiro rejects top-level systemPrompt with 400 REQUEST_BODY_INVALID.
+  // System prompts and context are already prepended into currentMessage/history content via contentPrefix.
   if (additionalModelRequestFields) {
     payload.additionalModelRequestFields = additionalModelRequestFields;
   }

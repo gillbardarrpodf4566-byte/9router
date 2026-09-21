@@ -261,89 +261,82 @@ describe("system-inject gemini", () => {
 });
 
 describe("system-inject kiro", () => {
-  it("updates systemPrompt and mirrored prefix of first history user preserving tail", () => {
+  it("prepends to first history user content preserving tail, never writing top-level systemPrompt", () => {
     const oldPrompt = "OLD_SYS";
     const timeCtx = "[Context: Current time is 2026-01-01T00:00:00.000Z]";
     const tail = "user tail content";
     const historyUserContent = `${oldPrompt}${SEP}${timeCtx}${SEP}${tail}`;
     const body = {
-      systemPrompt: oldPrompt,
       conversationState: {
         history: [{ userInputMessage: { content: historyUserContent, modelId: "m" } }, { assistantResponseMessage: { content: "..." } }],
         currentMessage: { userInputMessage: { content: "current " + tail, modelId: "m" } },
       },
     };
     injectSystemPrompt(body, FORMATS.KIRO, P1);
-    const next = `${oldPrompt}${SEP}${P1}`;
-    expect(body.systemPrompt).toBe(next);
-    expect(body.conversationState.history[0].userInputMessage.content).toBe(`${next}${SEP}${timeCtx}${SEP}${tail}`);
+    // Upstream rejects a top-level systemPrompt with 400 REQUEST_BODY_INVALID —
+    // the injector must never (re)create that field.
+    expect(body.systemPrompt).toBeUndefined();
+    expect(body.conversationState.history[0].userInputMessage.content).toBe(`${P1}${SEP}${historyUserContent}`);
     // currentMessage must stay untouched
     expect(body.conversationState.currentMessage.userInputMessage.content).toBe("current " + tail);
   });
 
-  it("when no history user, updates currentMessage instead", () => {
-    const oldPrompt = "OLD";
+  it("when no history user, prepends to currentMessage instead", () => {
     const body = {
-      systemPrompt: oldPrompt,
       conversationState: {
         history: [],
-        currentMessage: { userInputMessage: { content: `${oldPrompt}${SEP}tail`, modelId: "m" } },
+        currentMessage: { userInputMessage: { content: "tail", modelId: "m" } },
       },
     };
     injectSystemPrompt(body, FORMATS.KIRO, P1);
-    expect(body.systemPrompt).toBe(`${oldPrompt}${SEP}${P1}`);
-    expect(body.conversationState.currentMessage.userInputMessage.content).toBe(`${oldPrompt}${SEP}${P1}${SEP}tail`);
+    expect(body.systemPrompt).toBeUndefined();
+    expect(body.conversationState.currentMessage.userInputMessage.content).toBe(`${P1}${SEP}tail`);
   });
 
-  it("empty old prompt prepends to chosen user content", () => {
+  it("prepends to chosen user content", () => {
     const body = {
-      systemPrompt: "",
       conversationState: {
         history: [{ userInputMessage: { content: "tail hello", modelId: "m" } }],
         currentMessage: { userInputMessage: { content: "cur", modelId: "m" } },
       },
     };
     injectSystemPrompt(body, FORMATS.KIRO, P1);
-    expect(body.systemPrompt).toBe(P1);
+    expect(body.systemPrompt).toBeUndefined();
     expect(body.conversationState.history[0].userInputMessage.content).toBe(`${P1}${SEP}tail hello`);
   });
 
-  it("if old prompt not mirrored at head, do not alter user content", () => {
+  it("prepends even when the content head is unrelated", () => {
     const body = {
-      systemPrompt: "OLD",
       conversationState: {
         history: [{ userInputMessage: { content: "different head content", modelId: "m" } }],
         currentMessage: { userInputMessage: { content: "cur", modelId: "m" } },
       },
     };
     injectSystemPrompt(body, FORMATS.KIRO, P1);
-    expect(body.systemPrompt).toBe(`OLD${SEP}${P1}`);
-    expect(body.conversationState.history[0].userInputMessage.content).toBe("different head content");
+    expect(body.systemPrompt).toBeUndefined();
+    expect(body.conversationState.history[0].userInputMessage.content).toBe(`${P1}${SEP}different head content`);
   });
 
   it("exact retry idempotency for kiro", () => {
-    const oldPrompt = "OLD";
     const body = {
-      systemPrompt: oldPrompt,
       conversationState: {
-        history: [{ userInputMessage: { content: `${oldPrompt}${SEP}tail`, modelId: "m" } }],
+        history: [{ userInputMessage: { content: "tail", modelId: "m" } }],
         currentMessage: { userInputMessage: { content: "cur", modelId: "m" } },
       },
     };
     injectSystemPrompt(body, FORMATS.KIRO, P1);
     const after1 = JSON.parse(JSON.stringify(body));
     injectSystemPrompt(body, FORMATS.KIRO, P1);
-    expect(body.systemPrompt).toBe(after1.systemPrompt);
+    expect(body.systemPrompt).toBeUndefined();
     expect(body.conversationState.history[0].userInputMessage.content).toBe(after1.conversationState.history[0].userInputMessage.content);
     // different prompt both apply
     injectSystemPrompt(body, FORMATS.KIRO, P2);
-    expect(body.systemPrompt).toBe(`${oldPrompt}${SEP}${P1}${SEP}${P2}`);
+    expect(body.conversationState.history[0].userInputMessage.content).toBe(`${P2}${SEP}${P1}${SEP}tail`);
   });
 
   it("preserves non-enumerable _kiroUpstreamModel", () => {
     const body = {
-      systemPrompt: "OLD",
-      conversationState: { history: [{ userInputMessage: { content: "OLD" + SEP + "tail", modelId: "m" } }], currentMessage: { userInputMessage: { content: "OLD" + SEP + "tail2", modelId: "m" } } },
+      conversationState: { history: [{ userInputMessage: { content: "tail", modelId: "m" } }], currentMessage: { userInputMessage: { content: "tail2", modelId: "m" } } },
     };
     Object.defineProperty(body, "_kiroUpstreamModel", { value: "m", enumerable: false });
     injectSystemPrompt(body, FORMATS.KIRO, P1);
@@ -353,10 +346,10 @@ describe("system-inject kiro", () => {
 });
 
 describe("system-inject regression fixes", () => {
-  it("kiro partial mutation converges on retry after transient content write failure", () => {
-    const oldPrompt = "OLD";
+  it("kiro transient content write failure leaves no partial state; retry converges", () => {
+    const tail = "tail";
     let failNextWrite = true;
-    const um = { content: `${oldPrompt}${SEP}tail`, modelId: "m" };
+    const um = { content: tail, modelId: "m" };
     const proxiedUm = new Proxy(um, {
       set(t, p, v) {
         if (p === "content" && failNextWrite) { failNextWrite = false; throw new Error("transient"); }
@@ -364,35 +357,32 @@ describe("system-inject regression fixes", () => {
       },
     });
     const body = {
-      systemPrompt: oldPrompt,
       conversationState: {
         history: [{ userInputMessage: proxiedUm }],
       },
     };
     injectSystemPrompt(body, FORMATS.KIRO, P1);
-    // first pass rolled back atomically — nothing half-applied
-    expect(body.systemPrompt).toBe(oldPrompt);
-    expect(um.content).toBe(`${oldPrompt}${SEP}tail`);
+    // single content write threw — nothing applied, no top-level field created
+    expect(body.systemPrompt).toBeUndefined();
+    expect(um.content).toBe(tail);
     // retry converges
     injectSystemPrompt(body, FORMATS.KIRO, P1);
-    expect(body.systemPrompt).toBe(`${oldPrompt}${SEP}${P1}`);
-    expect(um.content).toBe(`${oldPrompt}${SEP}${P1}${SEP}tail`);
+    expect(um.content).toBe(`${P1}${SEP}${tail}`);
   });
 
-  it("kiro rolls back systemPrompt when user content write fails (atomicity)", () => {
-    const oldPrompt = "OLD";
+  it("kiro frozen content write failure leaves body untouched (no top-level field fallback)", () => {
     const body = {
-      systemPrompt: oldPrompt,
       conversationState: {
-        history: [{ userInputMessage: Object.freeze({ content: `${oldPrompt}${SEP}tail`, modelId: "m" }) }],
+        history: [{ userInputMessage: Object.freeze({ content: "tail", modelId: "m" }) }],
       },
     };
-    injectSystemPrompt(body, FORMATS.KIRO, P1);
-    expect(body.systemPrompt).toBe(oldPrompt);
+    expect(() => injectSystemPrompt(body, FORMATS.KIRO, P1)).not.toThrow();
+    expect(body.systemPrompt).toBeUndefined();
+    expect(body.conversationState.history[0].userInputMessage.content).toBe("tail");
   });
 
   it("kiro shape gate: stray conversationState without history/currentMessage does not hijack chat body", () => {
-    const body = { messages: [{ role: ROLE.SYSTEM, content: "hello" }], systemPrompt: "", conversationState: {} };
+    const body = { messages: [{ role: ROLE.SYSTEM, content: "hello" }], conversationState: {} };
     injectSystemPrompt(body, FORMATS.OPENAI, P1);
     expect(body.messages[0].content).toBe(`hello${SEP}${P1}`);
   });
@@ -409,14 +399,14 @@ describe("system-inject regression fixes", () => {
     expect(body.instructions).toBe(`You are RULE follower${SEP}RULE`);
   });
 
-  it("kiro empty-old prepend fires when prompt appears mid-tail only", () => {
+  it("kiro prepend fires when prompt appears mid-tail only (substring is not idempotent)", () => {
     const body = {
-      systemPrompt: "",
       conversationState: {
         history: [{ userInputMessage: { content: `some ${P1} here`, modelId: "m" } }],
       },
     };
     injectSystemPrompt(body, FORMATS.KIRO, P1);
+    expect(body.systemPrompt).toBeUndefined();
     expect(body.conversationState.history[0].userInputMessage.content).toBe(`${P1}${SEP}some ${P1} here`);
   });
 });

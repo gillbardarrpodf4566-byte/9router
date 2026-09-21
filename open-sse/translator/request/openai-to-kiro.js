@@ -422,7 +422,8 @@ export function openaiToKiroRequest(model, body, stream, credentials) {
   if (profileArn) {
     payload.profileArn = profileArn;
   }
-  if (systemPrompt) payload.systemPrompt = systemPrompt;
+  // Upstream Amazon CodeWhisperer/Kiro rejects top-level systemPrompt with 400 REQUEST_BODY_INVALID.
+  // System prompts and context are already prepended into currentMessage/history content via contentPrefix.
   if (additionalModelRequestFields) {
     payload.additionalModelRequestFields = additionalModelRequestFields;
   }
