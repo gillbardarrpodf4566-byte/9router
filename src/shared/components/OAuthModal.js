@@ -40,7 +40,7 @@ const PASTE_TOKEN_PROVIDERS = {
  * - Remote: Manual paste callback URL
  */
 export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, onClose, oauthMeta, idcConfig }) {
-  const [step, setStep] = useState("waiting"); // waiting | input | success | error
+  const [step, setStep] = useState("waiting"); // choose-method | waiting | input | success | error
   const [authData, setAuthData] = useState(null);
   const [callbackUrl, setCallbackUrl] = useState("");
   const [error, setError] = useState(null);
@@ -430,7 +430,12 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           .then((data) => setIdeStatus(data))
           .catch(() => setIdeStatus({ installed: false, path: null }));
       }
-      startOAuthFlow();
+      // Refresh-token providers: show method picker first, don't auto-start OAuth
+      if (REFRESH_TOKEN_PROVIDERS.has(provider)) {
+        setStep("choose-method");
+      } else {
+        startOAuthFlow();
+      }
     } else if (!isOpen) {
       // Abort polling and cleanup proxy when modal closes
       pollingAbortRef.current = true;
@@ -765,8 +770,41 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           </>
         )}
 
+        {/* Method chooser (Antigravity / Gemini CLI) */}
+        {REFRESH_TOKEN_PROVIDERS.has(provider) && step === "choose-method" && (
+          <div className="space-y-3">
+            <p className="text-sm text-text-muted">Choose how to add this account:</p>
+            <button
+              type="button"
+              onClick={() => { setAuthMode("browser"); setStep("waiting"); startOAuthFlow(); }}
+              className="w-full p-4 text-left border border-border rounded-lg hover:bg-sidebar transition-colors"
+            >
+              <div className="flex items-start gap-3">
+                <span className="material-symbols-outlined text-primary mt-0.5">open_in_new</span>
+                <div>
+                  <p className="font-medium">Google OAuth Login</p>
+                  <p className="text-xs text-text-muted mt-1">Sign in with Google in a popup window (standard flow)</p>
+                </div>
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => { setAuthMode("refresh-token"); setStep("input"); }}
+              className="w-full p-4 text-left border border-border rounded-lg hover:bg-sidebar transition-colors"
+            >
+              <div className="flex items-start gap-3">
+                <span className="material-symbols-outlined text-primary mt-0.5">key</span>
+                <div>
+                  <p className="font-medium">Import Refresh Token</p>
+                  <p className="text-xs text-text-muted mt-1">Paste a refresh_token from Gemini CLI config or another 9Router instance</p>
+                </div>
+              </div>
+            </button>
+          </div>
+        )}
+
         {/* Refresh Token Import (Antigravity / Gemini CLI) */}
-        {REFRESH_TOKEN_PROVIDERS.has(provider) && authMode === "refresh-token" && (step === "waiting" || step === "input" || step === "error") && (
+        {REFRESH_TOKEN_PROVIDERS.has(provider) && authMode === "refresh-token" && (step === "input" || step === "error") && (
           <div className="space-y-3">
             <p className="text-sm text-text-muted">
               Paste a Google OAuth refresh_token to import the account directly.
@@ -828,21 +866,6 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
                 {isXaiProvider ? "Waiting for Grok Build OAuth…" : "Waiting for popup authorization…"}
               </span>
             </div>
-
-            {/* Mode switcher for refresh-token providers */}
-            {REFRESH_TOKEN_PROVIDERS.has(provider) && (
-              <div className="flex items-center gap-3 my-1">
-                <div className="flex-1 h-px bg-border" />
-                <button
-                  type="button"
-                  onClick={() => { setAuthMode("refresh-token"); setError(null); }}
-                  className="text-xs text-primary hover:underline uppercase tracking-wider"
-                >
-                  Or import via Refresh Token
-                </button>
-                <div className="flex-1 h-px bg-border" />
-              </div>
-            )}
 
             {/* Divider */}
             <div className="flex items-center gap-3 my-1">
