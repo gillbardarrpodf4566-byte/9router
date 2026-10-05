@@ -9,6 +9,10 @@ import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 // Browser OAuth: popup → auto callback → auto exchange → poll-status.
 const PROXY_OAUTH_PROVIDERS = new Set(["trae", "windsurf", "zed"]);
 
+// Google OAuth providers that support importing a refresh_token directly.
+// This is useful for remote/headless servers where popup OAuth can't complete.
+const REFRESH_TOKEN_PROVIDERS = new Set(["antigravity", "gemini-cli"]);
+
 // Providers offering a paste-token fallback (import-token flow).
 // UX warns if the IDE (which issues the token) is not installed.
 const PASTE_TOKEN_PROVIDERS = {
@@ -44,8 +48,11 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const [deviceData, setDeviceData] = useState(null);
   const [polling, setPolling] = useState(false);
   // trae/windsurf: choose between browser OAuth (proxy) and paste-token (import)
-  const [authMode, setAuthMode] = useState("browser"); // "browser" | "paste-token"
+  // antigravity/gemini-cli: "browser" | "refresh-token"
+  const [authMode, setAuthMode] = useState("browser"); // "browser" | "paste-token" | "refresh-token"
   const [pasteToken, setPasteToken] = useState("");
+  const [refreshTokenInput, setRefreshTokenInput] = useState("");
+  const [refreshTokenLoading, setRefreshTokenLoading] = useState(false);
   const [ideStatus, setIdeStatus] = useState(null);
   const popupRef = useRef(null);
   const pollingAbortRef = useRef(false);
@@ -412,6 +419,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       setPolling(false);
       setAuthMode("browser");
       setPasteToken("");
+      setRefreshTokenInput("");
+      setRefreshTokenLoading(false);
       setIdeStatus(null);
       pollingAbortRef.current = false;
       // Best-effort IDE detection for paste-token providers (Trae/Windsurf)
@@ -756,8 +765,59 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           </>
         )}
 
+        {/* Refresh Token Import (Antigravity / Gemini CLI) */}
+        {REFRESH_TOKEN_PROVIDERS.has(provider) && authMode === "refresh-token" && (step === "waiting" || step === "input" || step === "error") && (
+          <div className="space-y-3">
+            <p className="text-sm text-text-muted">
+              Paste a Google OAuth refresh_token to import the account directly.
+              You can get this from an existing Gemini CLI / Antigravity IDE config,
+              or from a previous 9Router export.
+            </p>
+            <Input
+              value={refreshTokenInput}
+              onChange={(e) => setRefreshTokenInput(e.target.value)}
+              placeholder="1//0e... (Google OAuth refresh token)"
+              className="font-mono text-xs"
+            />
+            {error && <p className="text-xs text-red-500 break-words">{error}</p>}
+            <div className="flex gap-2">
+              <Button
+                onClick={async () => {
+                  const token = refreshTokenInput.trim();
+                  if (!token) return;
+                  setRefreshTokenLoading(true);
+                  setError(null);
+                  try {
+                    const res = await fetch("/api/oauth/antigravity/import-refresh-token", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ refreshToken: token, provider }),
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error);
+                    setStep("success");
+                    onSuccess?.();
+                  } catch (err) {
+                    setError(err.message);
+                    setStep("error");
+                  } finally {
+                    setRefreshTokenLoading(false);
+                  }
+                }}
+                fullWidth
+                disabled={!refreshTokenInput.trim() || refreshTokenLoading}
+              >
+                {refreshTokenLoading ? "Importing…" : "Import"}
+              </Button>
+              <Button onClick={handleClose} variant="ghost" fullWidth>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* Waiting + Manual Input combined (non-device-code, non-proxy) */}
-        {(step === "waiting" || step === "input") && !isDeviceCode && !PROXY_OAUTH_PROVIDERS.has(provider) && (
+        {(step === "waiting" || step === "input") && !isDeviceCode && !PROXY_OAUTH_PROVIDERS.has(provider) && authMode !== "refresh-token" && (
           <>
             {/* Option A: Auto via popup */}
             <div className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-sidebar/50">
@@ -768,6 +828,21 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
                 {isXaiProvider ? "Waiting for Grok Build OAuth…" : "Waiting for popup authorization…"}
               </span>
             </div>
+
+            {/* Mode switcher for refresh-token providers */}
+            {REFRESH_TOKEN_PROVIDERS.has(provider) && (
+              <div className="flex items-center gap-3 my-1">
+                <div className="flex-1 h-px bg-border" />
+                <button
+                  type="button"
+                  onClick={() => { setAuthMode("refresh-token"); setError(null); }}
+                  className="text-xs text-primary hover:underline uppercase tracking-wider"
+                >
+                  Or import via Refresh Token
+                </button>
+                <div className="flex-1 h-px bg-border" />
+              </div>
+            )}
 
             {/* Divider */}
             <div className="flex items-center gap-3 my-1">
