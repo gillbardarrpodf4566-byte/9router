@@ -7,6 +7,8 @@ import { DATA_DIR } from "@/lib/dataDir";
 import { getSettings } from "@/lib/localDb";
 
 const DEFAULT_PASSWORD = "123456";
+const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
+const SESSION_TTL_JWT = "7d";
 
 function loadJwtSecret() {
   if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
@@ -33,7 +35,7 @@ export async function createDashboardAuthToken(claims = {}) {
   return new SignJWT({ authenticated: true, ...claims })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
-    .setExpirationTime("24h")
+    .setExpirationTime(SESSION_TTL_JWT)
     .sign(SECRET);
 }
 
@@ -64,6 +66,7 @@ export async function setDashboardAuthCookie(cookieStore, request, claims = {}) 
     secure: shouldUseSecureCookie(request),
     sameSite: "lax",
     path: "/",
+    maxAge: SESSION_TTL_SECONDS,
   });
 }
 
