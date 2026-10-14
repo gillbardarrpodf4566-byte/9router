@@ -3,7 +3,7 @@ import { getProviderConnectionById } from "@/models";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { GEMINI_CONFIG } from "@/lib/oauth/constants/oauth";
 import { refreshGoogleToken, refreshCodexToken, updateProviderCredentials } from "@/sse/services/tokenRefresh";
-import { resolveOllamaLocalHost } from "open-sse/config/providers.js";
+import { resolveOllamaLocalHost, resolveXiaomiTokenplanBaseUrl, PROVIDERS } from "open-sse/config/providers.js";
 import { getModelsByProviderId } from "open-sse/config/providerModels.js";
 import { ANTIGRAVITY_IDE_BASE_URL, ANTIGRAVITY_IDE_USER_AGENT } from "open-sse/providers/shared.js";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
@@ -12,6 +12,7 @@ import { resolveQoderModels } from "open-sse/services/qoderModels.js";
 import { resolveGrokCliModels } from "open-sse/services/grokCliModels.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { resolveCursorModels } from "open-sse/services/cursorModels.js";
+import { resolveZedModels } from "open-sse/shared/zedAuth.js";
 
 const GEMINI_CLI_MODELS_URL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 
@@ -25,6 +26,13 @@ const parseOpenAIStyleModels = (data) => {
   if (Array.isArray(data)) return data;
   return data?.data || data?.models || data?.results || [];
 };
+
+const parseGeminiModels = (data) => (data?.models || [])
+  .map((model) => {
+    const id = String(model?.name || model?.id || "").replace(/^models\//, "");
+    return id ? { ...model, id, name: model?.displayName || id } : null;
+  })
+  .filter(Boolean);
 
 const parseGeminiCliModels = (data) => {
   if (Array.isArray(data?.models)) {
@@ -86,13 +94,13 @@ const parseAntigravityModels = (data) => {
     .map(([id, info]) => ({ id, name: info?.displayName || info?.name || id }));
 };
 
-const createOpenAIModelsConfig = (url) => ({
+const createOpenAIModelsConfig = (url, { auth = true, headers = {} } = {}) => ({
   url,
   method: "GET",
-  headers: { "Content-Type": "application/json" },
-  authHeader: "Authorization",
+  headers: { "Content-Type": "application/json", ...headers },
+  authHeader: auth ? "Authorization" : null,
   authPrefix: "Bearer ",
-  parseResponse: parseOpenAIStyleModels
+  parseResponse: parseOpenAIStyleModels,
 });
 
 const getStaticProviderModels = (providerId) =>
@@ -101,6 +109,51 @@ const getStaticProviderModels = (providerId) =>
     id: model.id,
     name: model.name || model.id,
   }));
+
+const staticModelsResult = (connection, warning) => {
+  const models = getStaticProviderModels(connection.provider);
+  if (!models.length && connection.defaultModel) {
+    models.push({ id: connection.defaultModel, name: connection.defaultModel });
+  }
+  return {
+    provider: connection.provider,
+    connectionId: connection.id || null,
+    models,
+    source: "static",
+    warning,
+  };
+};
+
+export function getRegistryModelsConfig(providerId) {
+  const provider = PROVIDERS[providerId];
+  if (!provider) return null;
+
+  const transports = Array.isArray(provider.transports) ? provider.transports : [];
+  const transport = transports.find((item) => item.format === "openai" && item.baseUrl) || provider;
+  const explicitUrl = provider.modelsUrl || transport.modelsUrl || provider.validateUrl || transport.validateUrl;
+  let url = explicitUrl;
+
+  if (!url) {
+    const baseUrl = transport.baseUrl;
+    if (typeof baseUrl !== "string" || !baseUrl) return null;
+    const suffix = ["/chat/completions", "/responses", "/messages"]
+      .find((candidate) => baseUrl.endsWith(candidate));
+    if (!suffix) return null;
+    url = `${baseUrl.slice(0, -suffix.length)}/models`;
+  }
+
+  const auth = transport.auth?.apiKey || transport.auth;
+  const authHeader = auth?.header || "Authorization";
+  const authPrefix = auth?.scheme === "raw" ? "" : "Bearer ";
+  return {
+    url,
+    method: "GET",
+    headers: { "Content-Type": "application/json" },
+    authHeader,
+    authPrefix,
+    parseResponse: parseOpenAIStyleModels,
+  };
+}
 
 // Generic custom resolver for OAuth providers that need refresh-on-401 + token persist.
 // Receives a `fetchFn(token)` and returns parsed models or throws.
@@ -158,7 +211,7 @@ const PROVIDER_MODELS_CONFIG = {
     method: "GET",
     headers: { "Content-Type": "application/json" },
     authQuery: "key", // Use query param for API key
-    parseResponse: (data) => data.models || []
+    parseResponse: parseGeminiModels
   },
   codex: {
     customResolver: buildOAuthResolver({
@@ -457,7 +510,48 @@ const PROVIDER_MODELS_CONFIG = {
       const data = await response.json();
       return { models: parseOpenAIStyleModels(data) };
     }
-  }
+  },
+  azure: {
+    customResolver: async (connection) => {
+      const deployment = connection.providerSpecificData?.deployment || connection.defaultModel;
+      return {
+        models: deployment ? [{ id: deployment, name: deployment }] : [],
+        warning: "Azure data-plane credentials cannot enumerate deployments; showing the configured deployment.",
+      };
+    },
+  },
+  "cloudflare-ai": {
+    customResolver: async (connection) => {
+      const accountId = connection.providerSpecificData?.accountId;
+      if (!accountId) return { models: [], warning: "Cloudflare Account ID is not configured." };
+      const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/models/search`, {
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${connection.apiKey}` },
+      });
+      if (!response.ok) {
+        return { models: [], warning: `Cloudflare models endpoint returned ${response.status}.` };
+      }
+      const data = await response.json();
+      return { models: parseOpenAIStyleModels(data?.result || data) };
+    },
+  },
+  "xiaomi-tokenplan": {
+    customResolver: async (connection) => {
+      const baseUrl = resolveXiaomiTokenplanBaseUrl(connection);
+      if (!baseUrl) return { models: [], warning: "Xiaomi Token Plan region is not configured." };
+      const url = baseUrl.replace(/\/chat\/completions$/, "/models");
+      const response = await fetch(url, {
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${connection.apiKey}` },
+      });
+      if (!response.ok) return { models: [], warning: `Xiaomi Token Plan models endpoint returned ${response.status}.` };
+      return { models: parseOpenAIStyleModels(await response.json()) };
+    },
+  },
+  zed: {
+    customResolver: async (connection) => {
+      const result = await resolveZedModels(connection, { forceRefresh: true });
+      return { models: result?.models || [], warning: result?.models?.length ? undefined : "Zed returned no live models." };
+    },
+  },
 };
 
 /**
@@ -546,31 +640,47 @@ export async function GET(request, { params }) {
       });
     }
 
-    const config = PROVIDER_MODELS_CONFIG[connection.provider];
+    const config = PROVIDER_MODELS_CONFIG[connection.provider] || getRegistryModelsConfig(connection.provider);
+
     if (!config) {
-      return NextResponse.json(
-        { error: `Provider ${connection.provider} does not support models listing` },
-        { status: 400 }
+      const fallback = staticModelsResult(
+        connection,
+        "Dynamic models listing is not supported; showing the static catalog.",
       );
+      return NextResponse.json(fallback);
     }
 
     // Config-driven custom resolver path (OAuth refresh, non-OpenAI shape, etc.)
     if (typeof config.customResolver === "function") {
-      const result = await config.customResolver(connection);
-      if (result.error) {
-        return NextResponse.json({ error: result.error }, { status: result.status || 500 });
+      try {
+        const result = await config.customResolver(connection);
+        if (result.error) throw new Error(result.error);
+        if (result.models?.length) {
+          return NextResponse.json({
+            provider: connection.provider,
+            connectionId: connection.id,
+            models: result.models,
+            source: "live",
+            ...(result.warning ? { warning: result.warning } : {}),
+          });
+        }
+        return NextResponse.json(staticModelsResult(
+          connection,
+          result.warning || "The provider returned no models; showing the static catalog.",
+        ));
+      } catch (error) {
+        console.log(`Error fetching models from ${connection.provider}, falling back to static catalog:`, error.message);
+        const fallback = staticModelsResult(connection, `Live model fetch failed: ${error.message}`);
+        if (fallback.models.length) return NextResponse.json(fallback);
+        return NextResponse.json({ error: error.message || "Failed to fetch models" }, { status: 502 });
       }
-      return NextResponse.json({
-        provider: connection.provider,
-        connectionId: connection.id,
-        models: result.models,
-        ...(result.warning ? { warning: result.warning } : {})
-      });
     }
 
     // Get auth token
     const token = connection.providerSpecificData?.copilotToken || connection.accessToken || connection.apiKey;
-    if (!token) {
+    if (!token && config.authHeader) {
+      const fallback = staticModelsResult(connection, "No credential is available; showing the static catalog.");
+      if (fallback.models.length) return NextResponse.json(fallback);
       return NextResponse.json({ error: "No valid token found" }, { status: 401 });
     }
 
@@ -596,25 +706,40 @@ export async function GET(request, { params }) {
       fetchOptions.body = JSON.stringify(config.body);
     }
 
-    const response = await fetch(url, fetchOptions);
+    try {
+      const response = await fetch(url, fetchOptions);
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.log(`Error fetching models from ${connection.provider}:`, errorText);
-      return NextResponse.json(
-        { error: `Failed to fetch models: ${response.status}` },
-        { status: response.status }
-      );
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.log(`Error fetching models from ${connection.provider}:`, errorText);
+        return NextResponse.json(staticModelsResult(
+          connection,
+          `Live models endpoint returned ${response.status}; showing the static catalog.`,
+        ));
+      }
+
+      const data = await response.json();
+      const models = config.parseResponse(data);
+      if (!models.length) {
+        return NextResponse.json(staticModelsResult(
+          connection,
+          "The provider returned no models; showing the static catalog.",
+        ));
+      }
+
+      return NextResponse.json({
+        provider: connection.provider,
+        connectionId: connection.id,
+        models,
+        source: "live",
+      });
+    } catch (error) {
+      console.log(`Error fetching models from ${connection.provider}:`, error.message);
+      return NextResponse.json(staticModelsResult(
+        connection,
+        `Live model fetch failed: ${error.message}`,
+      ));
     }
-
-    const data = await response.json();
-    const models = config.parseResponse(data);
-
-    return NextResponse.json({
-      provider: connection.provider,
-      connectionId: connection.id,
-      models
-    });
   } catch (error) {
     console.log("Error fetching provider models:", error);
     return NextResponse.json({ error: "Failed to fetch models" }, { status: 500 });
