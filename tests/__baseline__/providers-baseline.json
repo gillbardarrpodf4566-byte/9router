@@ -29,7 +29,7 @@
     ],
     "format": "antigravity",
     "headers": {
-      "User-Agent": "antigravity/ide/2.1.1 darwin/arm64"
+      "User-Agent": "antigravity/ide/3.0.0 darwin/arm64"
     },
     "retry": {
       "429": {
@@ -545,8 +545,8 @@
     "headers": {
       "Content-Type": "application/json",
       "Accept": "application/vnd.amazon.eventstream",
-      "User-Agent": "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0",
-      "X-Amz-User-Agent": "aws-sdk-js/3.0.0 kiro-ide/1.0.0"
+      "User-Agent": "AWS-SDK-JS/3.0.0 kiro-ide/1.4.154",
+      "X-Amz-User-Agent": "aws-sdk-js/3.0.0 kiro-ide/1.4.154"
     },
     "tokenUrl": "https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken",
     "authUrl": "https://prod.us-east-1.auth.desktop.kiro.dev",
