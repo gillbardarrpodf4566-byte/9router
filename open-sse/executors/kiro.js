@@ -7,6 +7,7 @@ import {
 } from "../config/kiroConstants.js";
 import { v4 as uuidv4 } from "uuid";
 import { refreshKiroToken } from "../services/tokenRefresh.js";
+import { buildKiroFingerprintHeaders } from "../services/kiroModels.js";
 import { SSE_DONE, SSE_HEADERS } from "../utils/sseConstants.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { STREAM_FIRST_CHUNK_TIMEOUT_MS } from "../config/runtimeConfig.js";
@@ -261,6 +262,16 @@ export class KiroExecutor extends BaseExecutor {
         headers["TokenType"] = "EXTERNAL_IDP";
       }
     }
+
+    // Kiro's gateway version-gates on the client identity in the UA pair
+    // ("This version of Kiro is no longer supported"). The per-account
+    // fingerprint format below is the same one the model-catalog fetcher
+    // already ships; the static registry UA stays only as a no-credentials
+    // fallback. Only the UA pair is taken — sdk request headers stay the
+    // executor's own.
+    const fingerprint = buildKiroFingerprintHeaders(credentials);
+    headers["User-Agent"] = fingerprint["User-Agent"];
+    headers["X-Amz-User-Agent"] = fingerprint["x-amz-user-agent"];
 
     return headers;
   }

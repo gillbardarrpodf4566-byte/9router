@@ -64,7 +64,7 @@ function regionFromProfileArn(profileArn) {
  * Keyed off whatever stable identifier we have for this credential, so the
  * same account always presents the same machineId.
  */
-function buildKiroFingerprintHeaders(credentials) {
+export function buildKiroFingerprintHeaders(credentials) {
   const seed =
     credentials?.providerSpecificData?.clientId
     || credentials?.refreshToken
