@@ -27,7 +27,9 @@ const KIRO_RUNTIME_SDK_VERSION = "1.0.0";
 const KIRO_AGENT_OS = "windows";
 const KIRO_AGENT_OS_VERSION = "10.0.26200";
 const KIRO_NODE_VERSION = "22.21.1";
-const KIRO_VERSION = "0.10.32";
+// Real client version the Kiro IDE sends (vscode.kiroVersion = product.json
+// "version"). The runtime.*.kiro.dev gateway enforces a minimum semver here.
+const KIRO_VERSION = "1.0.740";
 
 const DEFAULT_REGION = "us-east-1";
 const FETCH_TIMEOUT_MS = 30_000;

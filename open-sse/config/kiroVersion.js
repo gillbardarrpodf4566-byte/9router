@@ -5,7 +5,7 @@
 // Kiro IDE release (see also services/kiroModels.js, which owns the full
 // per-account fingerprint headers used on the chat path).
 export const KIRO_RUNTIME_SDK_VERSION = "1.0.0";
-export const KIRO_IDE_VERSION = "0.10.32";
+export const KIRO_IDE_VERSION = "1.0.740";
 export const KIRO_IDE_FALLBACK_MACHINE_ID = "9router-fallback";
 export const KIRO_USER_AGENT =
   `aws-sdk-js/${KIRO_RUNTIME_SDK_VERSION} ua/2.1 ` +
