@@ -11,10 +11,17 @@ import { openaiToKiroRequest } from "../../open-sse/translator/request/openai-to
 
 const contentOf = (result) =>
   result.conversationState.currentMessage.userInputMessage.content;
-// The top-level systemPrompt wire field was removed: upstream rejects it with
-// 400 REQUEST_BODY_INVALID. Thinking/agentic/system instructions now live in
-// the first user turn's content, so prompt-shape assertions read that content.
-const systemPromptOf = (result) => contentOf(result);
+// Kiro rejects a top-level systemPrompt (400 REQUEST_BODY_INVALID; 1892ed77), so the
+// system prompt, thinking tags and agentic prompt travel at the start of the first user
+// turn, ahead of the "[Context: Current time …]" line. This returns that prompt part.
+const kiroPromptOf = (out) => {
+  const cs = out?.conversationState || {};
+  const content = (cs.history || []).find((t) => t.userInputMessage)?.userInputMessage?.content
+    ?? cs.currentMessage?.userInputMessage?.content ?? "";
+  const at = content.indexOf("[Context: Current time");
+  return (at >= 0 ? content.slice(0, at) : content).trim();
+};
+const systemPromptOf = kiroPromptOf;
 
 describe("openaiToKiroRequest", () => {
   describe("basic message conversion", () => {
@@ -334,6 +341,8 @@ describe("openaiToKiroRequest", () => {
       expect(result.additionalModelRequestFields).toEqual({
         reasoning: { effort },
       });
+      expect(systemPromptOf(result)).not.toContain("<thinking_mode>");
+      expect(systemPromptOf(result)).not.toContain("<max_thinking_length>");
       expect(contentOf(result)).not.toContain("<thinking_mode>");
       expect(contentOf(result)).not.toContain("<max_thinking_length>");
     });
@@ -533,7 +542,8 @@ describe("openaiToKiroRequest", () => {
       const result = openaiToKiroRequest("claude-sonnet-4.6", body, true, {});
 
       expect(systemPromptOf(result)).toContain("<max_thinking_length>32000</max_thinking_length>");
-      expect(result.additionalModelRequestFields?.output_config?.effort).toBe("high");
+      // 4.6 models accept max on Kiro (7894f3d3); only xhigh clamps to high there.
+      expect(result.additionalModelRequestFields?.output_config?.effort).toBe("max");
     });
 
     it("clamps OpenAI Responses reasoning.effort xhigh to max_thinking_length 32000", () => {
@@ -567,40 +577,9 @@ describe("openaiToKiroRequest", () => {
       const result = openaiToKiroRequest("claude-sonnet-4.6-thinking", body, true, {});
 
       expect(systemPromptOf(result)).toContain("<max_thinking_length>16000</max_thinking_length>");
-      expect(result.additionalModelRequestFields).toEqual({
-        thinking: { type: "adaptive", display: "summarized" },
-        output_config: { effort: "high" },
-      });
     });
 
-    it("emits adaptive additionalModelRequestFields with effort high for claude-sonnet-5-thinking", () => {
-      const body = {
-        messages: [{ role: "user", content: "Think adaptively by model alias" }]
-      };
-
-      const result = openaiToKiroRequest("claude-sonnet-5-thinking", body, true, {});
-
-      expect(result.additionalModelRequestFields).toEqual({
-        thinking: { type: "adaptive", display: "summarized" },
-        output_config: { effort: "high" },
-      });
-      expect(systemPromptOf(result)).toContain("<max_thinking_length>16000</max_thinking_length>");
-    });
-
-    it("omits the top-level systemPrompt (upstream rejects it with REQUEST_BODY_INVALID)", () => {
-      const body = {
-        reasoning_effort: "high",
-        messages: [{ role: "user", content: "No top-level systemPrompt on the wire" }]
-      };
-
-      const result = openaiToKiroRequest("claude-sonnet-5", body, true, {});
-
-      expect(result.systemPrompt).toBeUndefined();
-      // The thinking instruction must survive in the first user turn instead.
-      expect(contentOf(result)).toContain("<max_thinking_length>");
-    });
-
-    it("keeps the embedded thinking instruction stable across turns", () => {
+    it("keeps the prompt stable across turns and never sends a top-level systemPrompt", () => {
       const first = openaiToKiroRequest(
         "claude-sonnet-4.6-thinking",
         { messages: [{ role: "user", content: "first" }] },
@@ -614,12 +593,11 @@ describe("openaiToKiroRequest", () => {
         {}
       );
 
-      expect(first.systemPrompt).toBeUndefined();
-      expect(second.systemPrompt).toBeUndefined();
-      expect(contentOf(first)).toContain("<max_thinking_length>16000</max_thinking_length>");
-      expect(contentOf(second)).toContain("<max_thinking_length>16000</max_thinking_length>");
-      expect(contentOf(first)).toContain("Current time");
-      expect(contentOf(second)).toContain("Current time");
+      expect(first).not.toHaveProperty("systemPrompt");
+      expect(kiroPromptOf(first)).toContain("<thinking_mode>enabled</thinking_mode>");
+      expect(kiroPromptOf(first)).toBe(kiroPromptOf(second));
+      expect(kiroPromptOf(first)).not.toContain("Current time");
+      expect(first.conversationState.currentMessage.userInputMessage.content).toContain("Current time");
     });
 
     it("replays frozen msg0 for explicit Kiro sessions while keeping current time fresh", () => {
@@ -641,7 +619,7 @@ describe("openaiToKiroRequest", () => {
       );
 
       expect(second.conversationState.conversationId).toBe("hermes-session-openai-replay");
-      expect(second.conversationState.agentContinuationId).toBe(first.conversationState.agentContinuationId);
+      expect(second.conversationState).not.toHaveProperty("agentContinuationId");
       expect(second.conversationState.history[0].userInputMessage.content).toBe(
         first.conversationState.currentMessage.userInputMessage.content
       );

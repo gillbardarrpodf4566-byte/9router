@@ -1,12 +1,15 @@
 import crypto from "crypto";
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
-import { OAUTH_ENDPOINTS, ANTIGRAVITY_HEADERS, AG_DEFAULT_TOOLS, AG_TOOL_SUFFIX, ANTIGRAVITY_PROMPT_REWRITES } from "../config/appConstants.js";
+import { OAUTH_ENDPOINTS, ANTIGRAVITY_HEADERS, AG_DEFAULT_TOOLS, AG_TOOL_SUFFIX, ANTIGRAVITY_PROMPT_REWRITES, ANTIGRAVITY_DEFAULT_SYSTEM } from "../config/appConstants.js";
+import { GEMINI_ROLE } from "../translator/schema/roles.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
-import { resolveSessionId } from "../utils/sessionManager.js";
+import { resolveSessionId, toNumericSessionId } from "../utils/sessionManager.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
-import { cleanJSONSchemaForAntigravity } from "../translator/formats/gemini.js";
+import { cleanJSONSchemaForAntigravity, normalizeGeminiContents } from "../translator/formats/gemini.js";
 import { DEFAULT_THINKING_AG_SIGNATURE } from "../config/defaultThinkingSignature.js";
+import { getGeminiThoughtSignatureSync } from "../services/thoughtSignatureStore.js";
+import { GEMINI_LONG_DECODE_MAX_OUTPUT, supportsGeminiLongDecode, wantsGeminiLongDecode, withGeminiLongDecode } from "../utils/geminiLongDecode.js";
 
 // Sanitize function name: Gemini requires [a-zA-Z_][a-zA-Z0-9_.:\-]{0,63}
 function sanitizeFunctionName(name) {
@@ -30,6 +33,56 @@ const ANTIGRAVITY_TRANSIENT_ERROR_PATTERNS = [
   /stream\s+(ended|closed|terminated|interrupted)/i,
   /empty\s+response/i,
 ];
+
+// Antigravity refuses some requests — e.g. a system prompt carrying fingerprinted third-party
+// agent text (see ANTIGRAVITY_PROMPT_REWRITES) — with a bare gRPC RESOURCE_EXHAUSTED: this generic
+// message and no details. Real quota errors carry reset info ("Individual quota reached ... Resets
+// in 1h56m", quotaResetTimeStamp, retryDelay). The bare form repeats for the same body every time,
+// so it is request-scoped: retrying, refreshing quota, or locking the account cannot help.
+const ANTIGRAVITY_BARE_EXHAUSTED_MESSAGE = /^Resource has been exhausted \(e\.g\. check quota\)\.?$/;
+export const ANTIGRAVITY_PROMPT_REJECTED_MESSAGE = "Antigravity rejected this request (upstream 429 RESOURCE_EXHAUSTED with no quota details, so this is not your quota). "
+  + "Antigravity refuses system prompts that carry certain third-party agent text. 9router rewrites the known strings "
+  + "(ANTIGRAVITY_PROMPT_REWRITES) and retries a refused prompt once with the system text moved into the first user turn, "
+  + "but this request was still refused.";
+
+export function isAntigravityPromptRejection(status, bodyText) {
+  if (status !== HTTP_STATUS.RATE_LIMITED || !bodyText) return false;
+  let err;
+  try { err = JSON.parse(bodyText)?.error; } catch { return false; }
+  if (err?.status !== "RESOURCE_EXHAUSTED") return false;
+  if (!ANTIGRAVITY_BARE_EXHAUSTED_MESSAGE.test(String(err.message || "").trim())) return false;
+  return !(Array.isArray(err.details) && err.details.length > 0);
+}
+
+// Read an upstream error body once and keep it readable for later callers. proxyAwareFetch's
+// DNS-bypass path (the default for Antigravity's Google hosts) returns a plain object with no
+// clone(), and its text() drains the socket, so the retry hook, the prompt-rejection check and
+// parseUpstreamError must share a single read. A real Response is cloned and left untouched.
+function readBodyOnce(response) {
+  if (!response?._bodyTextOnce) {
+    const canClone = typeof response?.clone === "function";
+    const read = canClone ? () => response.clone().text()
+      : typeof response?.text === "function" ? response.text.bind(response) : async () => "";
+    const pending = Promise.resolve().then(read).then(t => (typeof t === "string" ? t : ""), () => "");
+    response._bodyTextOnce = pending;
+    if (!canClone) {
+      // The original body is drained now: serve later readers from this read.
+      response.text = () => pending;
+      response.json = async () => JSON.parse(await pending);
+    }
+  }
+  return response._bodyTextOnce;
+}
+
+// Antigravity fingerprints systemInstruction only: the same text sent in a user turn passes (probed
+// live). Returns a copy of the envelope with the system parts moved to the front of the first user
+// turn (normalizeGeminiContents merges the two), or null when there is no system text to move.
+export function moveSystemInstructionToContents(body) {
+  const { systemInstruction, ...request } = body?.request || {};
+  const parts = (systemInstruction?.parts || []).filter(p => typeof p?.text === "string" && p.text.trim());
+  if (parts.length === 0) return null;
+  return { ...body, request: { ...request, contents: [{ role: GEMINI_ROLE.USER, parts }, ...(request.contents || [])] } };
+}
 
 const ANTIGRAVITY_TRANSIENT_STATUSES = new Set([
   HTTP_STATUS.SERVER_ERROR,
@@ -114,6 +167,68 @@ export class AntigravityExecutor extends BaseExecutor {
     super("antigravity", PROVIDERS.antigravity);
   }
 
+  async execute(args) {
+    let result = await super.execute(args);
+    // A prompt rejection means systemInstruction carries text Google fingerprints that
+    // ANTIGRAVITY_PROMPT_REWRITES does not cover yet. Retry once with that text moved into the first
+    // user turn, so a new fingerprint costs one extra round trip instead of failing every request.
+    // Image requests never send systemInstruction, so there is nothing to move for them.
+    if (result?.response?.status === HTTP_STATUS.RATE_LIMITED && !isImageModel(args.model)) {
+      const moved = moveSystemInstructionToContents(args.body);
+      if (moved && isAntigravityPromptRejection(result.response.status, await readBodyOnce(result.response))) {
+        args.log?.warn?.("ANTIGRAVITY", "System prompt rejected (fingerprinted third-party text not in ANTIGRAVITY_PROMPT_REWRITES); retrying with it in the first user turn");
+        args = { ...args, body: moved };
+        result = await super.execute(args);
+      }
+    }
+    if (!result?.response?.ok) return result;
+    // Gemini 4 long decode: Cloud Code takes the token inside the envelope (request.continuationToken).
+    const finalBody = result.transformedBody;
+    if (!wantsGeminiLongDecode(this.provider, finalBody?.model || args.model, finalBody?.request?.generationConfig)) return result;
+    const nextHop = async (continuationToken) =>
+      (await super.execute({ ...args, body: { ...args.body, request: { ...args.body?.request, continuationToken } } })).response;
+    return withGeminiLongDecode(result, { stream: args.stream, nextHop, signal: args.signal, log: args.log });
+  }
+
+  // Parse Antigravity quota error to extract precise resetsAtMs from ErrorInfo/RetryInfo
+  parseError(response, bodyText) {
+    // Request-scoped (400): no account lock, no quota refresh, and combos move to their next model.
+    if (isAntigravityPromptRejection(response.status, bodyText)) {
+      return { status: HTTP_STATUS.BAD_REQUEST, message: ANTIGRAVITY_PROMPT_REJECTED_MESSAGE };
+    }
+    if ((response.status === 429 || response.status === 409) && bodyText) {
+      try {
+        const json = JSON.parse(bodyText);
+        const err = json?.error;
+        let resetsAtMs = null;
+        const details = Array.isArray(err?.details) ? err.details : [];
+        for (const d of details) {
+          if (d?.metadata?.quotaResetTimeStamp) {
+            const ms = new Date(d.metadata.quotaResetTimeStamp).getTime();
+            if (!isNaN(ms) && ms > Date.now()) {
+              resetsAtMs = ms;
+              break;
+            }
+          }
+          if (typeof d?.retryDelay === "string") {
+            const sec = parseFloat(d.retryDelay);
+            if (!isNaN(sec) && sec > 0) {
+              const ms = Date.now() + Math.round(sec * 1000);
+              if (ms > Date.now()) {
+                resetsAtMs = ms;
+                break;
+              }
+            }
+          }
+        }
+        if (resetsAtMs) {
+          return { status: response.status, message: err?.message || bodyText, resetsAtMs };
+        }
+      } catch { /* fall through to default */ }
+    }
+    return super.parseError(response, bodyText);
+  }
+
   buildUrl(model, stream, urlIndex = 0) {
     const baseUrls = this.getBaseUrls();
     const baseUrl = baseUrls[urlIndex] || baseUrls[0];
@@ -126,11 +241,15 @@ export class AntigravityExecutor extends BaseExecutor {
   // sessionId comes from transformRequest output; base.execute runs transformRequest before
   // buildHeaders, so we read it from instance state cached there (fallback: explicit arg).
   buildHeaders(credentials, stream = true, sessionId = null) {
-    return {
+    const headers = {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${credentials.accessToken}`,
       "User-Agent": this.config.headers?.["User-Agent"] || ANTIGRAVITY_HEADERS["User-Agent"],
     };
+    // This override returns early, so it must re-add what BaseExecutor.buildHeaders adds:
+    // every streaming Antigravity call used to go out without Accept: text/event-stream.
+    if (stream) headers["Accept"] = "text/event-stream";
+    return headers;
   }
 
   transformRequest(model, body, stream, credentials) {
@@ -146,13 +265,17 @@ export class AntigravityExecutor extends BaseExecutor {
       // Strip model name suffixes for the actual API model name
       const cleanModel = model.replace(/-(\d+)x(\d+)$/, "");
 
-      // Build simplified contents — text-only, merge all user messages
+      // Build simplified contents — keep text and inlineData (reference images), merge all user messages
       const contents = [];
       const srcContents = body.request?.contents || body.contents || [];
       for (const c of srcContents) {
-        const textParts = (c.parts || []).filter(p => p.text !== undefined).map(p => ({ text: p.text }));
-        if (textParts.length > 0) {
-          contents.push({ role: c.role || "user", parts: textParts });
+        const imageParts = (c.parts || []).flatMap(p => {
+          if (p.text !== undefined) return [{ text: p.text }];
+          if (p.inlineData?.data) return [{ inlineData: p.inlineData }];
+          return [];
+        });
+        if (imageParts.length > 0) {
+          contents.push({ role: c.role || "user", parts: imageParts });
         }
       }
 
@@ -187,9 +310,12 @@ export class AntigravityExecutor extends BaseExecutor {
       };
     }
 
+    const rawSessionId = body.request?.sessionId || resolveSessionId({ headers: credentials?.rawHeaders, body, connectionId: credentials?.email || credentials?.connectionId, scope: "antigravity" });
+    const sessionId = toNumericSessionId(rawSessionId) || rawSessionId;
+
     // ─── Standard (non-image) request ───
     // Fix contents for Claude models via Antigravity
-    const contents = body.request?.contents?.map(c => {
+    const rawContents = (body.request?.contents || []).map(c => {
       let role = c.role;
       // functionResponse must be role "user" for Claude models
       if (c.parts?.some(p => p.functionResponse)) {
@@ -202,21 +328,33 @@ export class AntigravityExecutor extends BaseExecutor {
         return true;
       });
       // Gemini 3+ rejects functionCall parts without thoughtSignature. Clients (Claude Code, IDE)
-      // don't persist thoughtSignature in their history, so backfill the default signature on any
-      // functionCall part that arrives without one.
-      const needsBackfill = parts?.some(p => p.functionCall && !p.thoughtSignature) ?? false;
-      if (role !== c.role || parts?.length !== c.parts?.length || needsBackfill) {
-        return {
-          ...c, role,
-          parts: needsBackfill
-            ? parts.map(p => (p.functionCall && !p.thoughtSignature)
-                ? { ...p, thoughtSignature: DEFAULT_THINKING_AG_SIGNATURE }
-                : p)
-            : parts,
-        };
-      }
-      return c;
+      // don't persist thoughtSignature in their history, so backfill from cache or default signature.
+      // In parallel function calls, only the first call needs a signature; siblings stay unsigned.
+      let firstFunctionCallSeen = false;
+      const modifiedParts = parts?.map(p => {
+        if (!p.functionCall) return p;
+        const callId = p.functionCall.id;
+        const cachedSig = callId ? getGeminiThoughtSignatureSync(callId, sessionId, body.model || model) : null;
+        const callSig = p.thoughtSignature || cachedSig || (!firstFunctionCallSeen ? DEFAULT_THINKING_AG_SIGNATURE : undefined);
+        firstFunctionCallSeen = true;
+        if (callSig) {
+          return { ...p, thoughtSignature: callSig };
+        }
+        if (p.thoughtSignature && !cachedSig) {
+          // Unsigned sibling call
+          const { thoughtSignature: _, ...rest } = p;
+          return rest;
+        }
+        return p;
+      });
+
+      return {
+        ...c,
+        role,
+        parts: modifiedParts || parts || [],
+      };
     });
+    const contents = normalizeGeminiContents(rawContents, model);
 
     // Sanitize tool schemas and function names before sending to Antigravity.
     let tools = body.request?.tools;
@@ -257,9 +395,25 @@ export class AntigravityExecutor extends BaseExecutor {
       }
     }
 
+    // The real client always opens the system prompt with the Antigravity identity.
+    const systemParts = requestWithoutTools.systemInstruction?.parts;
+    const hasAgIdentity = (systemParts || []).some(
+      (part) => typeof part.text === "string" && part.text.includes("You are Antigravity")
+    );
+    if (!hasAgIdentity) {
+      requestWithoutTools.systemInstruction = {
+        ...(requestWithoutTools.systemInstruction || { role: GEMINI_ROLE.USER }),
+        parts: [{ text: ANTIGRAVITY_DEFAULT_SYSTEM }, ...(systemParts || [])]
+      };
+    }
+
     const generationConfig = { ...(requestWithoutTools.generationConfig || {}) };
-    if (generationConfig.maxOutputTokens > MAX_ANTIGRAVITY_OUTPUT_TOKENS) {
-      generationConfig.maxOutputTokens = MAX_ANTIGRAVITY_OUTPUT_TOKENS;
+    // Long-decode models (Hydrogen accepts up to 1M live) keep the client's budget; others stay capped.
+    const outputCap = supportsGeminiLongDecode(this.provider, body.model || model)
+      ? GEMINI_LONG_DECODE_MAX_OUTPUT
+      : MAX_ANTIGRAVITY_OUTPUT_TOKENS;
+    if (generationConfig.maxOutputTokens > outputCap) {
+      generationConfig.maxOutputTokens = outputCap;
     }
 
     const transformedRequest = {
@@ -267,7 +421,7 @@ export class AntigravityExecutor extends BaseExecutor {
       generationConfig,
       ...(contents && { contents }),
       ...(tools && { tools }),
-      sessionId: body.request?.sessionId || resolveSessionId({ headers: credentials?.rawHeaders, body, connectionId: credentials?.email || credentials?.connectionId, scope: "antigravity" }),
+      sessionId,
       safetySettings: undefined,
       ...(tools?.length > 0 && { toolConfig: { functionCallingConfig: { mode: "VALIDATED" } } })
     };
@@ -277,12 +431,19 @@ export class AntigravityExecutor extends BaseExecutor {
 
     this._lastSessionId = transformedRequest.sessionId; // cached for buildHeaders (base.execute order)
 
+    // Official Antigravity client omits `requestType` entirely on the agent
+    // (chat) path. Sending `requestType: "agent"` here (or leaking it through
+    // from an upstream envelope via the ...body spread below) makes Google
+    // bucket the request and return a detail-free 429 RESOURCE_EXHAUSTED even
+    // with quota available. `image_gen` and
+    // `search` buckets are unaffected and keep their own requestType.
+    delete body.requestType;
+
     return {
       ...body,
       project: projectId,
       model: body.model || model,
       userAgent: "antigravity",
-      requestType: "agent",
       requestId: buildIdeRequestId({ body, request: transformedRequest, credentials, model, requestType: "agent" }),
       request: transformedRequest
     };
@@ -401,11 +562,14 @@ export class AntigravityExecutor extends BaseExecutor {
     let retryMs = this.parseRetryHeaders(response.headers);
 
     try {
-      bodyText = await response.clone().text();
+      bodyText = await readBodyOnce(response);
       errorJson = bodyText ? JSON.parse(bodyText) : null;
     } catch {
       // ignore parse errors → fall through to status/message based retry
     }
+
+    // The same body is refused the same way every time — retries only add backoff delay.
+    if (isAntigravityPromptRejection(response.status, bodyText)) return false;
 
     const errorMessage = this.extractErrorMessage(errorJson, bodyText);
 

@@ -1,4 +1,9 @@
+import { setClaudeCliFallback } from "../utils/claudeCliVersion.js";
 import { platform, arch } from "os";
+// The version and the UA builder live in the MITM module (CJS): it also owns
+// the intercepted-client rewrite, so both layers share one source and cannot
+// drift. ESM importing CJS is natively supported; the reverse is not.
+import { ANTIGRAVITY_IDE_VERSION, buildAntigravityUserAgent } from "../../src/mitm/antigravityIdeVersion.js";
 
 // === OS/Arch helpers (Stainless fingerprint) ===
 export function mapStainlessOs() {
@@ -22,6 +27,10 @@ export function mapStainlessArch() {
 
 // Anthropic API version (single source — reused across claude-format providers/executors)
 export const ANTHROPIC_API_VERSION = "2023-06-01";
+// Floor version only; the live value comes from npm (utils/claudeCliVersion.js)
+// and outbound claude-cli/x.y.z headers are rewritten in proxyAwareFetch.
+export const CLAUDE_CLI_VERSION = "2.1.322";
+setClaudeCliFallback(CLAUDE_CLI_VERSION);
 
 // Shared Claude-compatible API headers (reused across claude-format providers)
 export const CLAUDE_API_HEADERS = {
@@ -34,7 +43,7 @@ export const CLAUDE_CLI_SPOOF_HEADERS = {
   "Anthropic-Version": ANTHROPIC_API_VERSION,
   "Anthropic-Beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28",
   "Anthropic-Dangerous-Direct-Browser-Access": "true",
-  "User-Agent": "claude-cli/2.1.92 (external, sdk-cli)",
+  "User-Agent": `claude-cli/${CLAUDE_CLI_VERSION} (external, sdk-cli)`,
   "X-App": "cli",
   "X-Stainless-Helper-Method": "stream",
   "X-Stainless-Retry-Count": "0",
@@ -61,10 +70,24 @@ const ANTHROPIC_BETA_BASE = [
 const ANTHROPIC_BETA_HEAVY_AGENT = ["advanced-tool-use-2025-11-20", "effort-2025-11-24"];
 
 // Heavy-agent beta flags are gated to opus/sonnet — cheaper models don't need them.
-export function selectAnthropicBeta(model = "") {
-  const flags = [...ANTHROPIC_BETA_BASE];
+// `redact-thinking` asks Anthropic to return signature-only thinking blocks, which
+// is right for clients that never render thinking but blanks the summaries a
+// client explicitly requested with `thinking.display: "summarized"`.
+const ANTHROPIC_BETA_REDACT_THINKING = "redact-thinking-2026-02-12";
+
+export function wantsThinkingSummaries(body) {
+  return body?.thinking?.display === "summarized";
+}
+
+export function selectAnthropicBeta(model = "", body = null) {
+  const flags = ANTHROPIC_BETA_BASE.filter((flag) => flag !== ANTHROPIC_BETA_REDACT_THINKING || !wantsThinkingSummaries(body));
   if (/^claude-(opus|sonnet)/.test(model)) flags.push(...ANTHROPIC_BETA_HEAVY_AGENT);
   return flags.join(",");
+}
+
+export function mergeAnthropicBeta(...values) {
+  const flags = values.flatMap((v) => (typeof v === "string" ? v.split(",") : [])).map((f) => f.trim()).filter(Boolean);
+  return [...new Set(flags)].join(",");
 }
 
 // Shared baseUrls
@@ -74,18 +97,12 @@ export const KIMI_CODING_BASE_URL = "https://api.kimi.com/coding/v1/messages";
 export const OPENAI_COMPAT_BASE = "https://api.openai.com/v1";
 export const ANTHROPIC_COMPAT_BASE = "https://api.anthropic.com/v1";
 
-// Antigravity IDE fingerprint. Keep this static even when 9router runs on Linux:
-// the provider profile is intentionally matching the IDE client, not the server host.
-//
-// Upstream gates the model catalog on this version string. Measured 2026-09-06 via
-// v1internal:fetchAvailableModels on daily-cloudcode-pa.googleapis.com:
-//   2.1.1 -> 25 models; no gemini-3.8-*, and no gemini-3.7-flash high/medium/low
-//   3.0.0 -> 33 models; full gemini-3.8-flash family, defaultAgentModelId=gemini-3.8-flash-high
-// Anything >= 3.0.0 returns the same 33. Do NOT lower this without re-checking the
-// catalog: a stale version makes newer models silently vanish instead of erroring.
-export const ANTIGRAVITY_IDE_VERSION = "3.0.0";
+// Official Antigravity Hub Desktop fingerprint captured from macOS arm64.
+// Keep this static even when 9router runs on Linux: the provider profile is
+// intentionally matching the Hub client, not the server host.
+export { ANTIGRAVITY_IDE_VERSION };
 export const ANTIGRAVITY_IDE_BASE_URL = "https://daily-cloudcode-pa.googleapis.com";
-export const ANTIGRAVITY_IDE_USER_AGENT = `antigravity/ide/${ANTIGRAVITY_IDE_VERSION} darwin/arm64`;
+export const ANTIGRAVITY_IDE_USER_AGENT = buildAntigravityUserAgent(ANTIGRAVITY_IDE_VERSION);
 
 // Antigravity OAuth client credentials (public CLI client — duplicated in usage.js + src/lib/oauth)
 export const ANTIGRAVITY_OAUTH_CLIENT = {

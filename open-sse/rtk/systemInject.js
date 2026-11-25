@@ -13,7 +13,7 @@ export function injectSystemPrompt(body, format, prompt) {
     if (!body || !prompt) return;
     if (typeof body !== "object") return;
 
-    // Kiro wire shape is unique (conversationState/systemPrompt) — handle directly.
+    // Kiro wire shape is unique (conversationState) — handle directly.
     if (isKiroBody(body) || format === FORMATS.KIRO) {
       injectKiroSystem(body, prompt);
       return;
@@ -63,7 +63,11 @@ function isKiroBody(body) {
   if (!body || typeof body !== "object") return false;
   const cs = body.conversationState;
   if (!cs || typeof cs !== "object") return false;
-  return Array.isArray(cs.history) || !!(cs.currentMessage && typeof cs.currentMessage === "object");
+  // A top-level `systemPrompt` used to be the marker, but the Kiro translator no
+  // longer emits it (kiro.dev rejects the field), so gate on the turn shape.
+  const historyTurn = Array.isArray(cs.history)
+    && cs.history.some(it => it && (it.userInputMessage || it.assistantResponseMessage));
+  return historyTurn || !!(cs.currentMessage && cs.currentMessage.userInputMessage);
 }
 
 // Exact idempotency: prompt present as its own SEP-delimited segment (or the
@@ -257,30 +261,33 @@ function injectGeminiSystem(body, prompt) {
 }
 
 // ---- Kiro ----
-// Upstream Amazon CodeWhisperer/Kiro rejects a top-level systemPrompt with
-// 400 REQUEST_BODY_INVALID, so the Kiro payload carries NO systemPrompt field.
-// The prompt is mirrored only into the leading prefix of the first user history
-// turn (or the current user turn when there is no history), prepended ahead of
-// the time context and user tail. Exact idempotency via hasPrompt on content.
+// The prompt is appended to the first user turn's content — the same place the
+// Kiro translator already mirrors the system text via its contentPrefix.
+//
+// A top-level `systemPrompt` is deliberately NOT written: the kiro.dev gateway
+// answers any body carrying that field with
+//   400 {"message":"Improperly formed request.","reason":"REQUEST_BODY_INVALID"}
+// The translator stopped emitting it in v0.5.59, but this injector kept adding
+// it back, so every kr/ model failed whenever an RTK prompt (caveman, ponytail)
+// was active.
 function injectKiroSystem(body, prompt) {
   try {
     const cs = body.conversationState;
     let targetMsg = null;
-    try {
-      const hist = Array.isArray(cs?.history) ? cs.history : null;
-      if (hist) {
-        for (const item of hist) {
-          if (item && item.userInputMessage) { targetMsg = item.userInputMessage; break; }
-        }
+    const hist = Array.isArray(cs?.history) ? cs.history : null;
+    if (hist) {
+      for (const item of hist) {
+        if (item && item.userInputMessage) { targetMsg = item.userInputMessage; break; }
       }
-      if (!targetMsg && cs?.currentMessage?.userInputMessage) {
-        targetMsg = cs.currentMessage.userInputMessage;
-      }
-    } catch (_) { targetMsg = null; }
+    }
+    if (!targetMsg && cs?.currentMessage?.userInputMessage) {
+      targetMsg = cs.currentMessage.userInputMessage;
+    }
     if (!targetMsg) return;
 
     const content = typeof targetMsg.content === "string" ? targetMsg.content : "";
-    if (hasPrompt(content, prompt)) return; // exact idempotency
-    try { targetMsg.content = content ? `${prompt}${SEP}${content}` : prompt; } catch (_) {}
+    const next = dedupStringAppend(content, prompt);
+    if (next === content) return; // already injected — idempotent across retries
+    try { targetMsg.content = next; } catch (_) { /* frozen/proxy fail-open */ }
   } catch (_) {}
 }

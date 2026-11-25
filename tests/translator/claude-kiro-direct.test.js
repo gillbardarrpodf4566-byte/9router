@@ -6,13 +6,19 @@ import "./registerAll.js";
 import { translateRequest, translateResponse } from "../../open-sse/translator/index.js";
 import { FORMATS } from "../../open-sse/translator/formats.js";
 
+// Kiro rejects a top-level systemPrompt (400 REQUEST_BODY_INVALID; 1892ed77), so the
+// system prompt, thinking tags and agentic prompt travel at the start of the first user
+// turn, ahead of the "[Context: Current time …]" line. This returns that prompt part.
+const kiroPromptOf = (out) => {
+  const cs = out?.conversationState || {};
+  const content = (cs.history || []).find((t) => t.userInputMessage)?.userInputMessage?.content
+    ?? cs.currentMessage?.userInputMessage?.content ?? "";
+  const at = content.indexOf("[Context: Current time");
+  return (at >= 0 ? content.slice(0, at) : content).trim();
+};
+
 const C2K = (body, credentials = null, model = "claude-sonnet-4.5") =>
   translateRequest(FORMATS.CLAUDE, FORMATS.KIRO, model, body, true, credentials, "kiro");
-
-// The top-level systemPrompt wire field was removed: upstream rejects it with
-// 400 REQUEST_BODY_INVALID. Instructions now live in the first user turn's
-// content, so prompt-shape assertions read that content.
-const contentOf = (out) => out.conversationState.currentMessage.userInputMessage.content;
 
 describe("Claude → Kiro (direct route)", () => {
   it("produces a Kiro conversationState payload", () => {
@@ -31,9 +37,8 @@ describe("Claude → Kiro (direct route)", () => {
 
     expect(first.conversationState.conversationId).toBe("hermes-session-123-claude-replay");
     expect(second.conversationState.conversationId).toBe("hermes-session-123-claude-replay");
-    expect(first.conversationState.agentContinuationId).toBeTruthy();
-    expect(second.conversationState.agentContinuationId).toBe(first.conversationState.agentContinuationId);
-    expect(first.conversationState.agentTaskType).toBe("vibe");
+    expect(first.conversationState).not.toHaveProperty("agentContinuationId");
+    expect(second.conversationState).not.toHaveProperty("agentTaskType");
     expect(second.conversationState.history[0].userInputMessage.content).toBe(
       first.conversationState.currentMessage.userInputMessage.content
     );
@@ -86,11 +91,10 @@ describe("Claude → Kiro (direct route)", () => {
       null,
       "kiro"
     );
-    expect(out.systemPrompt).toBeUndefined();
-    expect(contentOf(out)).toContain(
+    expect(kiroPromptOf(out)).toContain(
       "<thinking_mode>enabled</thinking_mode>"
     );
-    expect(out.agentMode).toBe("vibe");
+    expect(out).not.toHaveProperty("agentMode");
   });
 
   it("does not send additionalModelRequestFields for Kiro models without effort support", () => {
@@ -101,7 +105,7 @@ describe("Claude → Kiro (direct route)", () => {
 
     expect(out.additionalModelRequestFields).toBeUndefined();
     expect(out.thinking).toBeUndefined();
-    expect(contentOf(out)).toContain("<max_thinking_length>24576</max_thinking_length>");
+    expect(kiroPromptOf(out)).toContain("<max_thinking_length>24576</max_thinking_length>");
   });
 
   it("normalizes an unsupported Kiro intensity suffix while preserving agentic behavior", () => {
@@ -113,7 +117,7 @@ describe("Claude → Kiro (direct route)", () => {
 
     expect(out.conversationState.currentMessage.userInputMessage.modelId).toBe("claude-sonnet-4.5");
     expect(out.additionalModelRequestFields).toBeUndefined();
-    expect(contentOf(out)).toContain("CHUNKED WRITE PROTOCOL");
+    expect(kiroPromptOf(out)).toContain("CHUNKED WRITE PROTOCOL");
   });
 
   it("maps output_config.effort high to Kiro CLI-style additionalModelRequestFields for effort models", () => {
@@ -127,20 +131,7 @@ describe("Claude → Kiro (direct route)", () => {
       output_config: { effort: "high" },
     });
     expect(out.thinking).toBeUndefined();
-    expect(contentOf(out)).toContain("<max_thinking_length>24576</max_thinking_length>");
-  });
-
-  it("emits adaptive additionalModelRequestFields with effort high for claude-sonnet-5-thinking without explicit effort", () => {
-    const out = C2K({
-      messages: [{ role: "user", content: "think via synthetic alias" }],
-    }, null, "claude-sonnet-5-thinking");
-
-    expect(out.additionalModelRequestFields).toEqual({
-      thinking: { type: "adaptive", display: "summarized" },
-      output_config: { effort: "high" },
-    });
-    expect(out.thinking).toBeUndefined();
-    expect(contentOf(out)).toContain("<max_thinking_length>16000</max_thinking_length>");
+    expect(kiroPromptOf(out)).toContain("<max_thinking_length>24576</max_thinking_length>");
   });
 
   it("maps Claude-format effort to GPT-5.6 reasoning fields without legacy prompt tags", () => {
@@ -152,9 +143,8 @@ describe("Claude → Kiro (direct route)", () => {
     expect(out.additionalModelRequestFields).toEqual({
       reasoning: { effort: "low" },
     });
-    expect(out.systemPrompt).toBeUndefined();
-    expect(contentOf(out)).not.toContain("<thinking_mode>");
-    expect(contentOf(out)).not.toContain("<max_thinking_length>");
+    expect(kiroPromptOf(out)).not.toContain("<thinking_mode>");
+    expect(kiroPromptOf(out)).not.toContain("<max_thinking_length>");
   });
 
   it.each(["auto", "minimal", "ultra"])(
@@ -166,9 +156,8 @@ describe("Claude → Kiro (direct route)", () => {
       }, null, "gpt-5.6-sol");
 
       expect(out.additionalModelRequestFields).toBeUndefined();
-      expect(out.systemPrompt).toBeUndefined();
-      expect(contentOf(out)).toContain("<thinking_mode>enabled</thinking_mode>");
-      expect(contentOf(out)).toContain("<max_thinking_length>");
+      expect(kiroPromptOf(out)).toContain("<thinking_mode>enabled</thinking_mode>");
+      expect(kiroPromptOf(out)).toContain("<max_thinking_length>");
     }
   );
 
@@ -181,8 +170,8 @@ describe("Claude → Kiro (direct route)", () => {
       }, null, "gpt-5.6-sol");
 
       expect(out.additionalModelRequestFields).toBeUndefined();
-      expect(contentOf(out)).not.toContain("<thinking_mode>");
-      expect(contentOf(out)).not.toContain("<max_thinking_length>");
+      expect(kiroPromptOf(out)).not.toContain("<thinking_mode>");
+      expect(kiroPromptOf(out)).not.toContain("<max_thinking_length>");
     }
   );
 
@@ -198,19 +187,18 @@ describe("Claude → Kiro (direct route)", () => {
     });
   });
 
-  it("embeds Claude system into user content without a top-level systemPrompt", () => {
+  it("sends Claude system in the first user turn, never as a top-level systemPrompt", () => {
     const out = C2K({
       system: "system-only instruction",
       messages: [{ role: "user", content: "hello" }],
     });
 
-    // Upstream rejects a top-level systemPrompt with 400 REQUEST_BODY_INVALID,
-    // so the instruction must ride in the first user turn instead.
-    expect(out.systemPrompt).toBeUndefined();
-    expect(contentOf(out)).toContain("system-only instruction");
+    expect(out).not.toHaveProperty("systemPrompt");
+    expect(kiroPromptOf(out)).toBe("system-only instruction");
+    expect(out.conversationState.currentMessage.userInputMessage.content).toContain("system-only instruction");
   });
 
-  it("keeps the embedded system instruction stable across turns", () => {
+  it("keeps the system prompt stable across turns", () => {
     const first = C2K({
       system: "stable instruction",
       messages: [{ role: "user", content: "first" }],
@@ -220,11 +208,10 @@ describe("Claude → Kiro (direct route)", () => {
       messages: [{ role: "user", content: "second" }],
     });
 
-    expect(first.systemPrompt).toBeUndefined();
-    expect(second.systemPrompt).toBeUndefined();
-    expect(contentOf(first)).toContain("stable instruction");
-    expect(contentOf(second)).toContain("stable instruction");
-    expect(contentOf(first)).toContain("Current time");
+    expect(kiroPromptOf(first)).toBe("stable instruction");
+    expect(kiroPromptOf(first)).toBe(kiroPromptOf(second));
+    expect(kiroPromptOf(first)).not.toContain("Current time");
+    expect(first.conversationState.currentMessage.userInputMessage.content).toContain("Current time");
   });
 });
 

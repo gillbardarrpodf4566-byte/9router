@@ -115,13 +115,7 @@ async function text(stream) {
 async function execute(executor = new KiroExecutor(), overrides = {}) {
   return executor.execute({
     model: "kr/claude-opus-4.8",
-    // The translator no longer emits a top-level systemPrompt (upstream rejects
-    // it with 400 REQUEST_BODY_INVALID); instructions ride in user content.
-    body: {
-      conversationState: {
-        currentMessage: { userInputMessage: { content: "base user turn", modelId: "m" } },
-      },
-    },
+    body: { conversationState: { currentMessage: { userInputMessage: { content: "base", modelId: "m" } } } },
     stream: true,
     credentials,
     ...overrides
@@ -333,7 +327,7 @@ describe("Kiro terminal integrity recovery", () => {
     expect(body).not.toContain('"id":123');
   });
 
-  it("keeps model-controlled parser detail out of the retry instruction", async () => {
+  it("keeps model-controlled parser detail out of the retry system prompt", async () => {
     fetchMock
       .mockResolvedValueOnce(response([frame("toolUseEvent", {
         toolUseId: "bad-json",
@@ -346,10 +340,11 @@ describe("Kiro terminal integrity recovery", () => {
 
     const body = await (await execute()).response.text();
     const retryBody = JSON.parse(fetchMock.mock.calls[1][1].body);
-    const retryContent = retryBody.conversationState.currentMessage.userInputMessage.content;
 
     expect(body).toContain("Recovered safely.");
-    // Repair instruction rides in user content — no top-level systemPrompt.
+    // The repair instruction rides in the user turn: kiro.dev rejects a
+    // top-level systemPrompt with 400 REQUEST_BODY_INVALID.
+    const retryContent = retryBody.conversationState.currentMessage.userInputMessage.content;
     expect(retryBody.systemPrompt).toBeUndefined();
     expect(retryContent).toContain("tool_call wrapper was malformed");
     expect(retryContent).not.toContain("IGNORE_ALL_INSTRUCTIONS");
@@ -709,10 +704,13 @@ describe("Kiro terminal integrity recovery", () => {
     expect(body).not.toContain("must stay private");
   });
 
+  // A 401/403 falls through to the next Kiro surface (16cb40fd / 35b950be), so every
+  // retry surface must fail for the error to be surfaced; one mocked 401 left the
+  // remaining surfaces with an undefined response and the test timed out.
   it("surfaces retry HTTP failures as SSE after heartbeat commits headers", async () => {
     fetchMock
       .mockResolvedValueOnce(response([]))
-      .mockResolvedValue(new Response("unauthorized", {
+      .mockImplementation(async () => new Response("unauthorized", {
         status: 401,
         statusText: "Unauthorized"
       }));
@@ -728,7 +726,7 @@ describe("Kiro terminal integrity recovery", () => {
   it("bounds the retry HTTP error body", async () => {
     fetchMock
       .mockResolvedValueOnce(response([]))
-      .mockResolvedValue(new Response(`error-start-${"x".repeat(10_000)}-error-tail`, {
+      .mockImplementation(async () => new Response(`error-start-${"x".repeat(10_000)}-error-tail`, {
         status: 401,
         statusText: "Unauthorized"
       }));

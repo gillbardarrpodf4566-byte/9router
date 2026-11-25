@@ -1,5 +1,5 @@
 import { KIRO_CONFIG, assertValidAwsRegion } from "../constants/oauth.js";
-import { KIRO_USER_AGENT, KIRO_AMZ_USER_AGENT } from "open-sse/config/kiroVersion.js";
+import { buildKiroIdentityHeaders } from "open-sse/shared/kiroIdentity.js";
 
 /**
  * Kiro OAuth Service
@@ -276,6 +276,7 @@ export class KiroService {
         "x-amz-target": "AmazonCodeWhispererService.ListAvailableProfiles",
         "Authorization": `Bearer ${accessToken}`,
         "Accept": "application/json",
+        ...buildKiroIdentityHeaders({ accessToken }),
       },
       body: JSON.stringify({ maxResults: 10 }),
     });
@@ -307,8 +308,7 @@ export class KiroService {
         "Authorization": `Bearer ${apiKey}`,
         "TokenType": "API_KEY",
         "Accept": "application/json",
-        "User-Agent": KIRO_USER_AGENT,
-        "X-Amz-User-Agent": KIRO_AMZ_USER_AGENT,
+        ...buildKiroIdentityHeaders({ apiKey }),
       },
     });
 
@@ -364,6 +364,7 @@ export class KiroService {
         "x-amz-target": target,
         "Authorization": `Bearer ${accessToken}`,
         "Accept": "application/json",
+        ...buildKiroIdentityHeaders({ accessToken, providerSpecificData: { profileArn } }),
       },
       body: JSON.stringify({
         origin: "AI_EDITOR",

@@ -25,15 +25,20 @@ export function effortToBudget(effort) {
 
 // OpenAI reasoning_effort → Gemini thinkingLevel (gemini-3 enum: minimal|low|medium|high).
 // Gemini 3 cannot fully disable thinking; "none"/"off" map to "minimal".
+// "xhigh" is preserved (not collapsed to "high"): Gemini 4 Hydrogen serves it,
+// and the gemini-level clamp in thinkingUnified.js downgrades it to "high"
+// for models whose advertised levels lack xhigh. "max" is not a Gemini level.
 export function effortToThinkingLevel(effort) {
   const e = String(effort).toLowerCase().trim();
   if (e === "none" || e === "off") return "minimal";
-  if (e === "xhigh" || e === "max") return "high";
+  if (e === "max") return "high";
   return e;
 }
 
 // Numeric budget → nearest discrete level (reverse map via thresholds).
 // Returns null when budget <= 0 (no reasoning).
+// Thresholds are midpoints between LEVEL_TO_BUDGET values: max (128000) is
+// reachable, with the xhigh/max boundary at the 32768/128000 midpoint (80384).
 export function budgetToLevel(budget) {
   const b = Number(budget);
   if (!b || b <= 0) return null;
@@ -41,7 +46,8 @@ export function budgetToLevel(budget) {
   if (b <= 4096) return "low";
   if (b <= 16384) return "medium";
   if (b <= 28672) return "high";
-  return "xhigh";
+  if (b <= 80384) return "xhigh";
+  return "max";
 }
 
 // Gemini thinkingBudget (numeric) → OpenAI reasoning_effort (antigravity reverse map).

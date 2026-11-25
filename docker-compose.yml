@@ -19,12 +19,13 @@ services:
 
   # 可选服务：仪表盘「headroom」功能使用。
   # 小内存服务器（<3G 空闲）建议保持注释，9router 本身不依赖它。
+  # 启用时端口只绑定本机回环地址（与上游一致），不要暴露到公网。
   # headroom:
   #   image: ghcr.io/chopratejas/headroom:latest
   #   container_name: headroom
   #   restart: always
   #   ports:
-  #     - "8787:8787"
+  #     - "127.0.0.1:8787:8787"
 
 volumes:
   9router-data:
