@@ -4,18 +4,14 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# GHCR 包当前为私有，每次部署前用 .env 中的凭据登录。
-# （若之后把包改为 Public 可删除此段；GHCR_TOKEN 缺失时跳过登录直接尝试匿名拉取）
-if [ -f .env ] && grep -q '^GHCR_TOKEN=' .env; then
-  set -a; source .env; set +a
-  if [ -n "${GHCR_TOKEN:-}" ] && [ -n "${GHCR_USER:-}" ]; then
-    echo "--- 登录 GHCR ---"
-    echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null \
-      && echo "    登录成功" || echo "    登录失败（token 可能过期），继续尝试拉取"
-  fi
+# GHCR 包是 Public 的，镜像匿名拉取，不需要 token（见 DEPLOY-AUTO.md 第 2.1 步）。
+# 服务器上只要残留一份过期的 ghcr.io 登录，拉取就会报 error from registry: denied
+# （Docker 会带着失效凭据去请求，不会退回匿名访问），所以失败时清掉登录再试一次。
+if ! docker compose pull; then
+  echo "--- 拉取失败，清除本机残留的 ghcr.io 登录后重试 ---"
+  docker logout ghcr.io >/dev/null 2>&1 || true
+  docker compose pull
 fi
-
-docker compose pull
 docker compose up -d
 
 # 清理旧镜像，避免磁盘占满

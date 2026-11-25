@@ -160,7 +160,7 @@ docker logs 9router --tail 50
 
 - **Actions 构建失败**:几乎总是代码/依赖问题,看 build 步骤日志;与服务器无关。
 - **deploy 步骤 SSH 失败**:核对三个 Secrets;服务器上 `tail /var/log/secure` 看拒绝原因;确认密钥是 ed25519 且完整(含 BEGIN/END 行)。
-- **拉镜像 401/unauthorized**:GHCR 包被设回私有。改回 Public,或按 `deploy.sh` 顶部注释在 `.env` 配 `GHCR_USER`/`GHCR_TOKEN`。
+- **拉镜像 denied / 401 unauthorized**:GHCR 包被设回私有(改回 Public),或服务器上残留了过期的 `ghcr.io` 登录(`docker logout ghcr.io`;`deploy.sh` 拉取失败时也会自动清除并重试一次)。镜像是匿名拉取的,不需要 token。
 - **容器起来了但 502**:Nginx 反代没配好或 20128 端口没映射;`docker compose ps` + `curl http://127.0.0.1:20128/api/health` 逐层确认。
 - **流式响应卡住/一次性蹦出全部内容**:Nginx 忘了 `proxy_buffering off`。
 - **内存告急**:1.6G 空闲跑着容器 + Nginx 偏紧。别开 headroom,别在同一台机器再跑其他大服务;必要时加 swap:

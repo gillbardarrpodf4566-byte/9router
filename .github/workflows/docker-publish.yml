@@ -70,19 +70,14 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
             cd ${{ secrets.DEPLOY_DIR }}
-            # Re-sync deploy.sh from the repo before running it. The server's copy had
-            # drifted to an older revision whose `docker login` was commented out, so it
-            # ignored the GHCR_TOKEN injected below and relied on a stale credential cache
-            # — which is why deploys failed intermittently with "error from registry: denied".
-            # Keeping the server copy in sync also repairs the 5-minute cron fallback.
+            # Re-sync deploy.sh from the repo before running it, so the server copy cannot
+            # drift from master. The 5-minute cron fallback runs the same file, so keeping it
+            # in sync repairs that path as well.
             curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/master/deploy/deploy.sh" -o deploy.sh \
               && chmod +x deploy.sh \
               || echo "::warning::deploy.sh sync failed; falling back to the existing server copy"
-            # Inject GHCR token into .env
-            grep -q '^GHCR_USER=' .env || echo 'GHCR_USER=gillbardarrpodf4566-byte' >> .env
-            sed -i "s|^GHCR_USER=.*|GHCR_USER=gillbardarrpodf4566-byte|" .env
-            sed -i "s|^GHCR_TOKEN=.*|GHCR_TOKEN=${{ secrets.GHCR_TOKEN }}|" .env
-            # Explicitly login with the injected token BEFORE pulling the image.
-            # Belt-and-braces: works even if the synced deploy.sh is ever changed again.
-            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u gillbardarrpodf4566-byte --password-stdin
+            # The GHCR package is public, so deploy.sh pulls the image anonymously. No registry
+            # token is written to the server or logged in here: the token used previously expired,
+            # and a stale login cached on the server made every pull fail with
+            # "error from registry: denied".
             bash deploy.sh
