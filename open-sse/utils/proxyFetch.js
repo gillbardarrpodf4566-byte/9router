@@ -286,9 +286,14 @@ function resolveConnectionProxyUrl(targetUrl, proxyOptions) {
 }
 
 // ISP DPI (VN → api.anthropic.com) RSTs Node's default TLS ClientHello curve
-// list; a single curve rewrites the fingerprint enough to pass. Empirically:
-// default agent = ECONNRESET 100%, X25519 = through 100%.
-const TLS_ECDH_CURVE = process.env.NINEROUTER_TLS_ECDH_CURVE || "X25519";
+// list; rewriting the curve list (dropping X448/P-521) passes. But a SINGLE
+// curve is not universally safe: the AWS SSO OIDC edge (oidc.*.amazonaws.com,
+// the kiro builder-id refresh endpoint) RSTs an X25519-only ClientHello at
+// handshake (ECONNRESET → "fetch failed"), while X25519:P-256:P-384 completes
+// TLS 1.3 — so the default keeps the rewrite but stays multi-curve. VN-style
+// DPI that demands the single-curve shape can still force it via
+// NINEROUTER_TLS_ECDH_CURVE=X25519.
+const TLS_ECDH_CURVE = process.env.NINEROUTER_TLS_ECDH_CURVE || "X25519:P-256:P-384";
 
 // autoSelectFamilyAttemptTimeout = happy eyeballs (RFC 8305): race both address
 // families, fall over in 250ms — replaces the old global ipv4first flag, which fixed
